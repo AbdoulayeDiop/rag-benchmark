@@ -1,0 +1,17 @@
+# Dataset loaders (datasets/<name>/load.py)
+huggingface_hub    # dataset downloads (GutenQA, Qasper, TriviaQA, TechQA, ...)
+pandas             # parquet-shipped datasets
+pyarrow            # parquet engine for pandas
+requests           # Wikipedia / gov.uk / Gutenberg fetching
+tqdm               # loader progress
+chardet            # encoding detection (LiteraryQA)
+beautifulsoup4     # HTML parsing
+html5lib           # lenient HTML parser used by BeautifulSoup
+ftfy               # mojibake repair (LiteraryQA)
+loguru             # logging in the vendored LiteraryQA cleaning code
+markdownify        # HTML -> Markdown renderings
+
+# Chunking — added per method as they are implemented
+pysbd               # sentence segmentation with character offsets (en, pl)
+llama-index-core    # node parsers: sentence, markdown; offsets are native
+llama-index-embeddings-openai  # semantic chunking, any OpenAI-compatible endpoint
