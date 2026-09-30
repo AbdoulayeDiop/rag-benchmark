@@ -5,7 +5,7 @@ loaders record evidence as character offsets into the document (see README,
 "Dataset processing"), so a retrieved chunk can only be scored by span overlap if
 it knows where it came from:
 
-    document[chunk.start:chunk.end] == chunk.text
+    document[chunk.start:chunk.end] == chunk.original_text
 
 LlamaIndex's node parsers carry those offsets natively, which is why they are
 the library used here: `split_spans` reads them off each node and checks them,
@@ -25,14 +25,25 @@ class Chunk:
     not say -- the heading path above a Markdown section, say, which a chunk cut
     out of the middle of that section no longer carries. It is empty for methods
     that derive nothing beyond the span.
+
+    `original_text` is the span exactly as the document has it, and is what a
+    chunk is scored on. `text_to_embed` is what is embedded or indexed instead
+    when an augmentation method has added to the chunk; None means nothing was
+    added and `original_text` is embedded as it is.
     """
 
     doc_id: str
     index: int
     start: int
     end: int
-    text: str
+    original_text: str
     metadata: dict = field(default_factory=dict)
+    text_to_embed: str | None = None
+
+    @property
+    def text(self):
+        """The span's text: `original_text`, under the name older code uses."""
+        return self.original_text
 
     def __len__(self):
         return self.end - self.start
@@ -44,7 +55,8 @@ def to_chunks(document, spans, doc_id="", metadata=None):
     `metadata` is one dict per span, in the same order, or None for no metadata.
     """
     return [
-        Chunk(doc_id=doc_id, index=index, start=start, end=end, text=document[start:end],
+        Chunk(doc_id=doc_id, index=index, start=start, end=end,
+              original_text=document[start:end],
               metadata=dict(metadata[index]) if metadata else {})
         for index, (start, end) in enumerate(spans)
     ]
@@ -79,7 +91,7 @@ def verify(document, chunks):
     for chunk in chunks:
         if not 0 <= chunk.start < chunk.end <= len(document):
             raise ValueError(f"chunk {chunk.index} has out-of-range span ({chunk.start}, {chunk.end})")
-        if document[chunk.start:chunk.end] != chunk.text:
+        if document[chunk.start:chunk.end] != chunk.original_text:
             raise ValueError(f"chunk {chunk.index} text does not match document[{chunk.start}:{chunk.end}]")
         if previous is not None and chunk.start <= previous.start:
             raise ValueError(f"chunk {chunk.index} does not start after chunk {previous.index}")

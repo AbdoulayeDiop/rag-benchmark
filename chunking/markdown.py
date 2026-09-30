@@ -17,7 +17,6 @@ from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
 
 from .base import split_spans, to_chunks
 from .structure import PARAGRAPH_SEPARATOR
-from .segment import sentence_pieces
 
 
 def markdown(document, max_tokens=1024, language="en", doc_id=""):
@@ -43,7 +42,6 @@ def markdown(document, max_tokens=1024, language="en", doc_id=""):
         chunk_size=max_tokens,
         chunk_overlap=0,
         paragraph_separator=PARAGRAPH_SEPARATOR,
-        chunking_tokenizer_fn=sentence_pieces(language),
     )
     spans, spans_metadata = [], []
     for (start, end), meta in zip(sections, metadata):

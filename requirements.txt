@@ -15,3 +15,9 @@ markdownify        # HTML -> Markdown renderings
 pysbd               # sentence segmentation with character offsets (en, pl)
 llama-index-core    # node parsers: sentence, markdown; offsets are native
 llama-index-embeddings-openai  # semantic chunking, any OpenAI-compatible endpoint
+
+# Chunk augmentation
+openai              # chat completions: LumberChunker, summary and contextual
+
+# Visualization
+streamlit             # interactive chunk visualizer UI

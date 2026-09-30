@@ -280,7 +280,65 @@ to build more.
    3. LLM-based
 
 ### CHunk augmentation methods
+1. Parent document title
+2. Parent document summary
+3. Contextual chunking (by anthropic)
+4. Keywords
+5. Hypothetical questions
+6. Chunk summary (embedded in place of the chunk)
 
+Implemented in `augmentation/`. A method takes the chunks of one document and
+returns them with `text_to_embed` set. `original_text` and the offsets are left
+alone, so an augmented chunk is still scored by span overlap. `text_to_embed`
+is None on a chunk nothing was added to; `get_text_to_embed(chunk)` returns the
+right one either way. Every method calls an OpenAI-compatible endpoint
+directly, with no LlamaIndex nodes or docstores in between.
+
+```python
+from augmentation import (add_context, add_keywords, add_questions, add_summary,
+                          add_title, use_summary)
+
+chunks = add_title(chunks)                   # one LLM call per document, on its first k chunks
+chunks = add_summary(chunks, document)       # one LLM pass over the whole document
+chunks = add_context(chunks, document)       # one LLM call per chunk, reading the document
+chunks = add_keywords(chunks)                # one LLM call per chunk, reading the chunk
+chunks = add_questions(chunks)               # one LLM call per chunk, reading the chunk
+chunks = use_summary(chunks)                 # one LLM call per chunk, reading the chunk
+```
+
+What each method generated is kept under its own metadata key, and
+`text_to_embed` is rebuilt from them in a fixed order, so methods combine in
+any order:
+
+| Order | Metadata key | Set by |
+|---|---|---|
+| 1 | `parent_document_title` | `add_title` |
+| 2 | `parent_document_summary` | `add_summary` |
+| 3 | `context` | `add_context` |
+| 4 | the chunk's `original_text` | — |
+| 5 | `keywords` | `add_keywords` |
+| 6 | `questions` | `add_questions` |
+
+`use_summary` is the exception: a chunk with a `summary` of itself is embedded
+as that summary alone, and the other keys are left out of `text_to_embed`.
+
+Cost is what separates them. `add_context` shows the model the document again
+for every chunk; documents over `max_context_tokens` (8,000) are shown as a
+window around the chunk instead of whole. At the endpoint's limit of 128,000
+input tokens a minute, and estimating 4 characters per token, contextualising a
+whole corpus takes:
+
+| Dataset | 256-token chunks | 1,024-token chunks |
+|---|---:|---:|
+| ConditionalQA | 1.8 h | 0.5 h |
+| TechQA | 2.4 h | 0.6 h |
+| SQuAD | 3.1 h | 0.8 h |
+| Qasper | 8.3 h | 2.1 h |
+| Natural Questions | 9.5 h | 2.4 h |
+| PoQuAD | 15.5 h | 3.9 h |
+| TriviaQA | 26.0 h | 6.5 h |
+| LiteraryQA | 57.9 h | 14.5 h |
+| GutenQA | 69.5 h | 17.4 h |
 
 ### Embedding models
 

@@ -19,7 +19,6 @@ Polish costs noticeably more tokens per character than English.
 from llama_index.core.node_parser import SentenceSplitter
 
 from .base import split_spans, to_chunks
-from .segment import sentence_pieces
 
 # Our corpora separate paragraphs with a blank line; LlamaIndex defaults to
 # three newlines, which never matches here and would skip the paragraph rung.
@@ -38,6 +37,5 @@ def sentence(document, max_tokens=1024, overlap=200, language="en", doc_id=""):
         chunk_size=max_tokens,
         chunk_overlap=overlap,
         paragraph_separator=PARAGRAPH_SEPARATOR,
-        chunking_tokenizer_fn=sentence_pieces(language),
     )
     return to_chunks(document, split_spans(document, parser), doc_id)
