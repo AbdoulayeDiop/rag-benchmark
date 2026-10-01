@@ -3,6 +3,13 @@
 Shared by `chunking.lumberchunker` and `augmentation`: the plain OpenAI client
 against any OpenAI-compatible endpoint, with the same handling of rate limits
 and empty answers wherever a model is asked for something.
+
+No model is named here or anywhere else in the library: every function that
+calls one takes `model`, the name the endpoint serves it under. Which models a
+run uses is the experimenter's choice, and a default would make a result depend
+on a name buried in the code, and break on any endpoint that does not serve it.
+Prefer a model that is not a reasoning one: the methods give small output
+budgets, which a reasoning model spends before it answers.
 """
 
 import os
@@ -10,12 +17,6 @@ import time
 
 import httpx
 from openai import OpenAI, RateLimitError
-
-# What the generated methods call unless told otherwise: served by the
-# configured endpoint, 128,000 tokens of context, and not a reasoning model, so
-# the output budget is spent on the answer.
-DEFAULT_MODEL = "openweight-large"
-
 
 def get_client(api_key=None, api_base=None, proxy=None, timeout=60.0, **kwargs):
     """Build an OpenAI client for any OpenAI-compatible endpoint.
@@ -32,7 +33,7 @@ def get_client(api_key=None, api_base=None, proxy=None, timeout=60.0, **kwargs):
     )
 
 
-def call_llm(prompt, model=DEFAULT_MODEL, client=None, max_output_tokens=512, attempts=5,
+def call_llm(prompt, model, client=None, max_output_tokens=512, attempts=5,
              system=None, temperature=0.0, response_format=None):
     """Send `prompt` as a single user message and return the model's answer.
 
@@ -41,8 +42,9 @@ def call_llm(prompt, model=DEFAULT_MODEL, client=None, max_output_tokens=512, at
     as it is, as in `{"type": "json_object"}`.
 
     A rate-limited call waits a minute and is tried again, up to `attempts`
-    times -- the configured endpoint counts input tokens per minute, so waiting
-    is all there is to do. Anything else raises, and so does an empty answer:
+    times. The endpoint used here counts input tokens per minute, so a minute's
+    wait is what clears its limit; one with a longer window needs more
+    `attempts`. Anything else raises, and so does an empty answer:
     an experiment that quietly mixes augmented and bare chunks measures nothing.
     """
     client = client or get_client()

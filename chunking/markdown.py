@@ -19,7 +19,7 @@ from .base import split_spans, to_chunks
 from .structure import PARAGRAPH_SEPARATOR
 
 
-def markdown(document, max_tokens=1024, language="en", doc_id=""):
+def markdown(document, max_tokens=1024, language="auto", doc_id=""):
     """Chunk a Markdown `document` into the sections its headings declare.
 
     `max_tokens` caps a chunk in tokens; None leaves sections whole however long

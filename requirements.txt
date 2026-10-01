@@ -13,11 +13,19 @@ markdownify        # HTML -> Markdown renderings
 
 # Chunking — added per method as they are implemented
 pysbd               # sentence segmentation with character offsets (en, pl)
+lingua-language-detector  # language="auto": which pysbd rules a document needs
 llama-index-core    # node parsers: sentence, markdown; offsets are native
 llama-index-embeddings-openai  # semantic chunking, any OpenAI-compatible endpoint
 
 # Chunk augmentation
 openai              # chat completions: LumberChunker, summary and contextual
+
+# Embedding and ingestion (embedding.py, ingest.py)
+chromadb                          # persistent vector database, one collection per embedding model
+llama-index-vector-stores-chroma  # ChromaVectorStore over that collection
+llama-index-retrievers-bm25       # BM25Retriever with disk persistence (bm25s, PyStemmer)
+tokenizers                        # an embedding model's own tokenizer, for exact truncation
+tiktoken                          # the stand-in tokenizer when none is named
 
 # Visualization
 streamlit             # interactive chunk visualizer UI

@@ -7,17 +7,21 @@ places where no library will do: slicing fixed-size windows, and reading an HTML
 outline without throwing the markup away.
 """
 
-from .base import Chunk, split_spans, to_chunks, verify
+from .base import (Chunk, build_text_to_embed, get_text_to_embed, split_spans, to_chunks,
+                   update_chunk_metadata, verify)
 from .fixed import fixed_char
 from .html import html
 from .markdown import markdown
 from .semantic import clustered, openai_embedding, semantic, tiled
-from .segment import paragraph_spans, sentence_pieces, sentence_spans
+from .segment import detect_language, paragraph_spans, sentence_pieces, sentence_spans
 from .structure import sentence
 
 __all__ = [
     "Chunk",
+    "build_text_to_embed",
     "clustered",
+    "detect_language",
+    "get_text_to_embed",
     "fixed_char",
     "html",
     "markdown",
@@ -30,5 +34,6 @@ __all__ = [
     "split_spans",
     "tiled",
     "to_chunks",
+    "update_chunk_metadata",
     "verify",
 ]

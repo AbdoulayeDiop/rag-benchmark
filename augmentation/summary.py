@@ -25,7 +25,7 @@ retrieved and scored: only what it is found by changes.
 
 from llama_index.core.utils import get_tokenizer
 
-from .base import DEFAULT_MODEL, SEPARATOR, augment_chunk, call_llm, call_llm_for_each
+from .base import SEPARATOR, augment_chunk, call_llm, call_llm_for_each
 
 # It asks for the document's own language because the summary is embedded
 # beside the chunk, and an English summary on a Polish chunk pulls the two
@@ -62,13 +62,15 @@ def _split_by_tokens(text, max_tokens):
     return [text[start:start + size] for start in range(0, len(text), size)]
 
 
-def summarize_document(document, model=DEFAULT_MODEL, client=None, prompt=SUMMARY_PROMPT,
+def summarize_document(document, model, client=None, prompt=SUMMARY_PROMPT,
                        max_input_tokens=64000):
     """Summarise a whole `document`, however long, and return the summary.
 
-    `max_input_tokens` is how much text goes into one call. The default is half
-    the default model's context, because the configured endpoint allows 128,000
-    input tokens a minute: a call that size would be the whole minute's budget.
+    `max_input_tokens` is how much text goes into one call, and must leave room
+    for the prompt in `model`'s context. The default, 64,000, is half the
+    128,000-token context of the models used here, and half the 128,000 input
+    tokens a minute their endpoint allows: a call of the full context would be
+    the whole minute's budget. Lower it for a model with a smaller context.
     """
     text = document
     while True:
@@ -81,7 +83,7 @@ def summarize_document(document, model=DEFAULT_MODEL, client=None, prompt=SUMMAR
         text = SEPARATOR.join(summaries)
 
 
-def add_summary(chunks, document, model=DEFAULT_MODEL, client=None, prompt=SUMMARY_PROMPT,
+def add_summary(chunks, document, model, client=None, prompt=SUMMARY_PROMPT,
                 max_input_tokens=64000):
     """Put a summary of `document` ahead of every one of its `chunks`.
 
@@ -96,7 +98,7 @@ def add_summary(chunks, document, model=DEFAULT_MODEL, client=None, prompt=SUMMA
     return [augment_chunk(chunk, parent_document_summary=document_summary) for chunk in chunks]
 
 
-def use_summary(chunks, model=DEFAULT_MODEL, client=None, sentences=3,
+def use_summary(chunks, model, client=None, sentences=3,
                 prompt=CHUNK_SUMMARY_PROMPT, workers=4):
     """Embed each of `chunks` as a generated summary of itself, not as its text.
 

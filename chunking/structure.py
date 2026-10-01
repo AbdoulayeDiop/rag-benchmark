@@ -25,7 +25,7 @@ from .base import split_spans, to_chunks
 PARAGRAPH_SEPARATOR = "\n\n"
 
 
-def sentence(document, max_tokens=1024, overlap=200, language="en", doc_id=""):
+def sentence(document, max_tokens=1024, overlap=200, language="auto", doc_id=""):
     """Chunk `document` on sentence boundaries, at most `max_tokens` tokens.
 
     `overlap` is in tokens. `language` is a pysbd language code and must

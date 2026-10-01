@@ -7,7 +7,7 @@ for Cassini-Huygens. It helps lexical search most, since BM25 matches on terms
 and nothing else.
 """
 
-from .base import DEFAULT_MODEL, augment_chunk, call_llm_for_each
+from .base import augment_chunk, call_llm_for_each
 
 # Same-language line for the reason given in `summary`: keywords in English
 # after a Polish chunk match no Polish question.
@@ -17,7 +17,7 @@ KEYWORDS_PROMPT = """<chunk>
 Give up to {count} keywords or short key phrases naming the main topics and entities of this chunk, for the purposes of improving search retrieval of the chunk. Replace pronouns by what they refer to. Write them in the language the chunk itself is written in. Answer only with the keywords, separated by commas, on one line."""
 
 
-def add_keywords(chunks, model=DEFAULT_MODEL, client=None, count=8, prompt=KEYWORDS_PROMPT,
+def add_keywords(chunks, model, client=None, count=8, prompt=KEYWORDS_PROMPT,
                  workers=4):
     """Put up to `count` generated keywords after each of `chunks`.
 

@@ -11,7 +11,7 @@ reading the first chunks is the one source that works for all of them, and the
 opening of a document is where it states its title when it has one.
 """
 
-from .base import DEFAULT_MODEL, SEPARATOR, augment_chunk, call_llm
+from .base import SEPARATOR, augment_chunk, call_llm
 
 # Same-language line for the reason given in `summary`: the title is embedded
 # beside the chunk, and an English title on a Polish chunk pulls the two apart.
@@ -21,7 +21,7 @@ TITLE_PROMPT = """<document_start>
 Above is the beginning of a document. Give the title of the whole document, not the heading of one of its sections: the one it states if it states one, otherwise a short title naming its subject. Write it in the language the document itself is written in. Answer only with the title and nothing else."""
 
 
-def generate_title(chunks, model=DEFAULT_MODEL, client=None, k=5, prompt=TITLE_PROMPT):
+def generate_title(chunks, model, client=None, k=5, prompt=TITLE_PROMPT):
     """Title the document `chunks` were cut from, reading its first `k` chunks.
 
     `chunks` must be in document order, as every chunking method returns them.
@@ -31,7 +31,7 @@ def generate_title(chunks, model=DEFAULT_MODEL, client=None, k=5, prompt=TITLE_P
     return call_llm(prompt.format(text=opening), model, client, max_output_tokens=64)
 
 
-def add_title(chunks, model=DEFAULT_MODEL, client=None, k=5, prompt=TITLE_PROMPT):
+def add_title(chunks, model, client=None, k=5, prompt=TITLE_PROMPT):
     """Put a generated title of the document ahead of every one of its `chunks`.
 
     The title is generated once per call, from the first `k` chunks, so pass

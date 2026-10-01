@@ -23,7 +23,7 @@ read with that in mind.
 
 from llama_index.core.utils import get_tokenizer
 
-from .base import DEFAULT_MODEL, augment_chunk, call_llm_for_each
+from .base import augment_chunk, call_llm_for_each
 
 # Anthropic's prompt, plus the last line. The prompt is in English and says
 # nothing about language, and on a Polish document the notes came back in
@@ -52,7 +52,7 @@ def _window_around_chunk(document, chunk, size):
     return max(0, end - size), end
 
 
-def add_context(chunks, document, model=DEFAULT_MODEL, client=None, max_context_tokens=8000,
+def add_context(chunks, document, model, client=None, max_context_tokens=8000,
                max_output_tokens=512, prompt=CONTEXT_PROMPT, workers=4):
     """Put a generated note ahead of each of `chunks`, situating it in `document`.
 
@@ -61,8 +61,9 @@ def add_context(chunks, document, model=DEFAULT_MODEL, client=None, max_context_
     a longer one is shown as a window around the chunk. Raising it buys wider
     context at a cost that grows with it for every chunk.
 
-    `workers` is how many chunks are in flight at once: at the default window
-    the endpoint's limit is 16 chunks a minute. `max_output_tokens` bounds the
+    `workers` is how many chunks are in flight at once. At the default window
+    each call reads some 8,000 tokens, so a limit of 128,000 input tokens a
+    minute, the one on the endpoint used here, allows 16 chunks a minute. `max_output_tokens` bounds the
     note; a reasoning model spends it on reasoning first and needs
     more than the note itself takes. `prompt` is a template with `{document}`
     and `{chunk}` fields.

@@ -16,9 +16,12 @@ to score against. BeautifulSoup's html.parser reports the source position of
 every tag it opens, exact on all three HTML corpora, so the outline is read from
 those positions instead and the chunks stay spans.
 
-A chunk therefore holds markup, not clean text. Stripping tags is the embedding
-step's business; changing the text here would break `document[start:end] ==
-text` and with it the evaluation.
+A chunk's `original_text` therefore holds markup, not clean text: changing it
+would break `document[start:end] == text` and with it the evaluation. Every
+chunk is marked `metadata['markup'] = "html"` instead, and its `text_to_embed`
+is the text with the tags stripped (`base.build_text_to_embed`), which augmentation
+keeps when it adds to a chunk. What is embedded and indexed is clean text; what
+is scored is the span.
 """
 
 from bs4 import BeautifulSoup
@@ -54,13 +57,13 @@ def html(document, max_tokens=1024, headings=HEADINGS, doc_id=""):
 
     # A heading opens a section that runs to the next heading of any level, and
     # carries the path of headings above it.
-    starts, metadata, path = [0], [{}], {}
+    starts, metadata, path = [0], [{"markup": "html"}], {}
     for tag in soup.find_all(list(headings)):
         level = headings.index(tag.name)
         path = {name: value for name, value in path.items() if headings.index(name) < level}
         path[tag.name] = tag.get_text(" ", strip=True)
         starts.append(offset_of(tag))
-        metadata.append(dict(path))
+        metadata.append({"markup": "html", **path})
 
     bounds = starts[1:] + [len(document)]
     sections = [(start, end) for start, end in zip(starts, bounds) if document[start:end].strip()]

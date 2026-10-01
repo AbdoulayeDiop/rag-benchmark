@@ -40,20 +40,20 @@ from .base import split_spans, to_chunks
 from .segment import sentence_pieces, sentence_spans
 
 
-def openai_embedding(model="bge-m3", api_key=None, api_base=None,
+def openai_embedding(model, api_key=None, api_base=None,
                      proxy=None, batch_size=64, timeout=60.0, **kwargs):
     """Build an embedding client for any OpenAI-compatible endpoint.
 
     OpenAILikeEmbedding is used rather than OpenAIEmbedding because the latter
     validates the model name against an enum of OpenAI's own models and refuses
-    anything else. The default model is what the configured endpoint serves:
-    bge-m3, which is multilingual -- the corpora need that, since PoQuAD is
-    Polish and an English-only encoder would put its breakpoints in the wrong
-    places.
+    anything else. `model` is the name the endpoint serves the encoder under.
+    Choose a multilingual one for these corpora: PoQuAD is Polish, and an
+    English-only encoder would put its breakpoints in the wrong places. The
+    experiments here use bge-m3.
 
-    `batch_size` is how many sentences go up per request; 64 is the largest the
-    configured endpoint accepts, and it answers 413 rather than splitting the
-    batch itself.
+    `batch_size` is how many sentences go up per request. 64 is the largest the
+    endpoint used here accepts -- it answers 413 rather than splitting the batch
+    itself -- and a safe value elsewhere; raise it where the endpoint allows.
 
     `api_key` and `api_base` default to OPENAI_API_KEY and OPENAI_API_BASE.
     `proxy` is an http(s) proxy URL; it is applied by handing the client its own
@@ -72,8 +72,8 @@ def openai_embedding(model="bge-m3", api_key=None, api_base=None,
     )
 
 
-def semantic(document, embed_model=None, breakpoint_percentile=95, buffer_size=1,
-             language="en", doc_id=""):
+def semantic(document, embed_model, breakpoint_percentile=95, buffer_size=1,
+             language="auto", doc_id=""):
     """Chunk `document` where consecutive sentences stop resembling each other.
 
     `breakpoint_percentile` is the cut threshold: 95 breaks at the largest 5% of
@@ -81,12 +81,12 @@ def semantic(document, embed_model=None, breakpoint_percentile=95, buffer_size=1
     `buffer_size` is how many neighbouring sentences are embedded together --
     1 compares single sentences, which is noisier than grouping them.
 
-    `embed_model` defaults to `openai_embedding()`, which sends every sentence
-    of the document to the configured endpoint. `language` is a pysbd code, used
+    `embed_model` is a LlamaIndex embedding model, such as one built by
+    `openai_embedding`; every sentence of the document is sent to it. `language` is a pysbd code, used
     for the sentence segmentation the method starts from.
     """
     parser = SemanticSplitterNodeParser(
-        embed_model=embed_model or openai_embedding(),
+        embed_model=embed_model,
         breakpoint_percentile_threshold=breakpoint_percentile,
         buffer_size=buffer_size,
         sentence_splitter=sentence_pieces(language),
@@ -119,8 +119,8 @@ def _extent(node, merge_children, sentence_count, sentences):
             sentences[max(sentences_below)][1])
 
 
-def clustered(document, embed_model=None, percentile=95, threshold=None, max_tokens=1024,
-              buffer=1, language="en", doc_id=""):
+def clustered(document, embed_model, percentile=95, threshold=None, max_tokens=1024,
+              buffer=1, language="auto", doc_id=""):
     """Chunk `document` by clustering its sentences, adjacent ones only.
 
     Each sentence is embedded together with its `buffer` neighbours on either
@@ -148,7 +148,6 @@ def clustered(document, embed_model=None, percentile=95, threshold=None, max_tok
     if sentence_count < 2:
         return to_chunks(document, sentences, doc_id)
 
-    embed_model = embed_model or openai_embedding()
     sentence_vectors = np.array(embed_model.get_text_embedding_batch(
         [_window(document, sentences, position, buffer) for position in range(sentence_count)]))
 
@@ -217,8 +216,8 @@ def _blocks(document, sentences, block):
             for start in range(count)]
 
 
-def tiled(document, embed_model=None, block=3, percentile=90, neighbourhood=2,
-          language="en", doc_id=""):
+def tiled(document, embed_model, block=3, percentile=90, neighbourhood=2,
+          language="auto", doc_id=""):
     """Chunk `document` where a block of sentences stops resembling the next block.
 
     Rather than comparing one sentence with the next, each candidate boundary is
@@ -254,7 +253,6 @@ def tiled(document, embed_model=None, block=3, percentile=90, neighbourhood=2,
     if count <= 2 * block:
         return to_chunks(document, [(sentences[0][0], sentences[-1][1])] if sentences else [], doc_id)
 
-    embed_model = embed_model or openai_embedding()
     block_vectors = np.array(embed_model.get_text_embedding_batch(
         _blocks(document, sentences, block)))
     block_vectors /= np.linalg.norm(block_vectors, axis=1, keepdims=True)

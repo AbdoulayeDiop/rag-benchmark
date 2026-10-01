@@ -2,7 +2,7 @@
 
 Each method takes the chunks of one document and returns them with
 `text_to_embed` set; see `base` for what goes into it and why none of it is
-written into the chunk's own text. `get_text_to_embed` reads it.
+written into the chunk's own text. `chunking.get_text_to_embed` reads it.
 
 All of them generate what they add with an LLM, through the plain OpenAI
 client. By how much they read:
@@ -15,8 +15,7 @@ client. By how much they read:
     add_context     one call per chunk, reading the document again each time
 """
 
-from .base import (augment_chunk, build_text_to_embed, call_llm, call_llm_for_each,
-                   get_text_to_embed)
+from .base import augment_chunk, call_llm, call_llm_for_each
 from .contextual import add_context
 from .keywords import add_keywords
 from .questions import add_questions
@@ -30,11 +29,9 @@ __all__ = [
     "add_summary",
     "add_title",
     "augment_chunk",
-    "build_text_to_embed",
     "call_llm",
     "call_llm_for_each",
     "generate_title",
-    "get_text_to_embed",
     "summarize_document",
     "use_summary",
 ]

@@ -12,7 +12,7 @@ different method: it changes what the index holds, not what a chunk embeds as.
 
 import re
 
-from .base import DEFAULT_MODEL, augment_chunk, call_llm_for_each
+from .base import augment_chunk, call_llm_for_each
 
 # The language line is there because the questions stand in for the ones that
 # will be asked, and PoQuAD's are asked in Polish. Its wording matters: "do not
@@ -27,7 +27,7 @@ Write {count} questions that this chunk answers, for the purposes of improving s
 _LIST_MARKER = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 
 
-def add_questions(chunks, model=DEFAULT_MODEL, client=None, count=3, prompt=QUESTIONS_PROMPT,
+def add_questions(chunks, model, client=None, count=3, prompt=QUESTIONS_PROMPT,
                   workers=4):
     """Put `count` generated questions after each of `chunks`.
 

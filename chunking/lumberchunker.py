@@ -1,7 +1,7 @@
 import json
 from typing import List
 
-from llm import DEFAULT_MODEL, call_llm
+from llm import call_llm
 
 from .base import Chunk, to_chunks, verify
 from .segment import paragraph_spans
@@ -21,7 +21,7 @@ def _count_words(text: str) -> int:
     return round(1.2 * len(text.split()))
 
 
-def lumberchunker(document: str, model: str = None, client=None, doc_id: str = "") -> List[Chunk]:
+def lumberchunker(document: str, model: str, client=None, doc_id: str = "") -> List[Chunk]:
     """Chunk a plain‑text *document* using the LumberChunker LLM strategy.
 
     The algorithm follows the reference implementation in
@@ -57,17 +57,17 @@ def lumberchunker(document: str, model: str = None, client=None, doc_id: str = "
             window += 1
             window_text = "\n".join(paragraphs[i : i + window])
             word_count = _count_words(window_text)
-        # Determine the document sent to the model (mirrors script nuance).
+        
+        # Determine the document sent to the model. Remove the last paragraph to be 
+        # under the 550 words, excep if we have only one paragraph.
         sent = 1 if window == 1 else window - 1
         final_doc = "\n".join(paragraphs[i : i + sent])
         prompt = _system_prompt + "\nDocument:\n" + final_doc
-        # Rate limits are retried by `call_llm` and any other error raises. An
-        # empty answer, or one without a usable `answer_id`, is a refusal: -1,
-        # the original's `content_flag_increment`.
+        
         try:
             raw = call_llm(
                 prompt,
-                model or DEFAULT_MODEL,
+                model,
                 client,
                 system=_system_prompt,
                 temperature=0.1,
@@ -77,6 +77,7 @@ def lumberchunker(document: str, model: str = None, client=None, doc_id: str = "
             answer_id = int(json.loads(raw)["answer_id"])
         except (ValueError, KeyError, TypeError):
             answer_id = -1
+        
         # A boundary must be a paragraph the model was shown, past the first:
         # anything else is treated as a refusal, so boundaries only move forward
         # and stay inside the document.
