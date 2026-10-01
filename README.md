@@ -272,12 +272,12 @@ to build more.
 2. Structure preserving (with upper bound)
    1. Sentence
    2. Recursive character splitter
-   3. Markdown
-   4. HTML
+   3. Markdown (used on md documents only)
+   4. HTML (used on html documents only)
 3. Semantic
    1. Breakpoint/consecutive sentences similarity
    2. Clustering-based
-   3. LLM-based
+   3. LLM-based ([LumberChunker](https://github.com/joaodsmarques/LumberChunker/blob/main/Code/LumberChunker-Segmentation.py))
 
 ### CHunk augmentation methods
 1. Parent document title
@@ -342,8 +342,218 @@ whole corpus takes:
 
 ### Embedding models
 
+`bge-m3` through the OpenAI-compatible endpoint, in `embedding.py`. It is
+multilingual, which PoQuAD needs. Measured on the endpoint: 1,024 dimensions,
+unit-length vectors (a dot product is a cosine), at most 64 texts a request,
+and an input over 8,192 of the model's own tokens is refused rather than
+truncated. With `--embedding-max-tokens`, a chunk over the limit is cut to fit
+before it is sent, and its node is marked `truncated`, so results on it can be
+read with that in mind; only the unbounded chunkers (`semantic`, `tiled`,
+`lumberchunker`) or a long generated context produce one. The node keeps its
+whole text; only what is sent is cut.
+
+The cut is counted in tokens. `--embedding-tokenizer BAAI/bge-m3` counts in the
+model's own tokenizer, which matches the server exactly: a text cut to 8,192
+tokens is accepted. Without it, tiktoken's cl100k_base stands in, and it
+undercounts English for bge-m3 by 12-14% (8,192 tiktoken tokens of a GutenQA
+book came to 9,161-9,372 bge-m3 tokens), so the limit then needs a margin --
+7,000 rather than 8,192. Without `--embedding-max-tokens` nothing is cut and an
+over-long chunk stops the run.
+
+What is embedded is the chunk's `text_to_embed` (`get_text_to_embed(chunk)`),
+and sparse retrieval indexes the same text. For an HTML chunk it is already
+free of tags: the chunk keeps its markup in `original_text`, which its offsets
+cover, and is marked `markup: "html"`, and `text_to_embed` is the stripped text
+-- set by the chunker and kept by every augmentation.
+
+### Ingestion
+
+`ingest.py` runs the indexation steps end to end for one dataset and one
+configuration, and writes an index that retrieval reads without calling a model:
+
+```bash
+export EMBEDDING_MODEL=bge-m3                             # or --embedding-model
+export LLM_MODEL=mistral-small-3-2-24b-instruct-2506      # or --llm-model
+python ingest.py squad --param max_tokens=256 --param overlap=0
+python ingest.py conditionalqa --chunking html --param max_tokens=256
+python ingest.py qasper --chunking markdown --augment title context
+```
+
+No model is assumed anywhere in the code: the library functions take the model
+as an argument, and the runner takes it from its flags or the environment, as
+it takes the endpoint from `OPENAI_API_BASE`. A run that needs a model and was
+given none stops before doing anything. The model names a run used are
+recorded in its `config.json`.
+
+```
+indexes/<dataset>/<name>/config.json              what the run is
+indexes/<dataset>/<name>/chunks.jsonl             one chunk per line, in document order
+indexes/<dataset>/<name>/documents.jsonl          one line per finished document
+indexes/<dataset>/<name>/chroma/                  Chroma database, one collection per embedding model
+indexes/<dataset>/<name>/bm25/                    persisted BM25Retriever
+```
+
+`<name>` defaults to the rendering, the method, the parameters given and the
+augmentations (`txt-sentence-max_tokens=256-overlap=0`, `md-markdown+title+context`).
+An index is read back with `load_vector_store(run, model)` and
+`load_bm25(run, top_k)`; `node_to_chunk` turns a retrieved node into its
+`Chunk`, and `load_chunks(run)` reads the whole run from `chunks.jsonl`.
+
+- **Dense: Chroma through LlamaIndex.** Vectors go into a persistent Chroma
+  collection wrapped in `ChromaVectorStore`, compared by cosine. Chroma's index
+  is HNSW, so dense search is approximate and a method's score includes the
+  index's own recall -- small at these sizes (at most some 45,000 chunks), not
+  zero. Vectors are still computed by `embed_batch` and handed to the store on
+  the nodes, because it handles the endpoint's length refusals.
+- **Sparse: LlamaIndex `BM25Retriever`**, persisted with `persist` and rebuilt
+  on each run, since it calls no model. English is stemmed and loses its stop
+  words. Polish has neither a Snowball stemmer in PyStemmer nor a stop-word
+  list in bm25s, so PoQuAD is indexed on whole words. `persist` does not save
+  the stemming settings; load with `load_bm25`, which restores them, rather
+  than `BM25Retriever.from_persist_dir` directly.
+- **Both stores hold the same nodes, and a node is the whole chunk**: one per
+  chunk, its text being the chunk's `text_to_embed`, its id `<doc_id>:<chunk index>`.
+  Its metadata holds `doc_id`, `chunk_index`, `start`, `end`, `original_text`,
+  `truncated`, and every key of the chunk's own metadata (heading path, title,
+  summary, context, keywords, questions). `text_to_embed` is the node's text,
+  not a field. `node_to_chunk(node)` rebuilds the `Chunk` from a node either
+  store returns, recomputing `text_to_embed` from the augmentations. Chroma takes only flat values, so a list such as the questions
+  is stored as JSON and `json_encoded_keys` names it. None of it is in the text BM25
+  indexes.
+- **`chunks.jsonl` stays** as the build's checkpoint and the plain-text record
+  of a run, for verifying an experiment. Retrieval does not need it.
+- **Resumable.** A document's chunks are written together and the document is
+  logged only once they are on disk; vectors are added a batch at a time, in
+  chunk order. A stopped run continues at the first unfinished document and
+  repeats no LLM call of a finished one, which matters for the runs in the cost
+  table above. `--max-documents` can be raised later: the run is extended, not
+  redone.
+- **The embedding model is its own axis.** Running again with another
+  `--embedding-model` adds a collection beside the first and leaves the chunks
+  alone.
+- **One directory, one configuration.** `config.json` records everything that
+  decides a chunk's content, with the chunking method's defaults filled in; a
+  directory that already holds documents refuses a different one.
+- The rendering follows the method (`md` for `markdown`, `html` for `html`,
+  `txt` otherwise) and can be overridden with `--rendering`. The language is
+  detected, once per run, from the opening of the first documents, unless
+  `--language` names one; the chunking functions detect it per document by
+  default (`language="auto"`). The detector is
+  lingua, restricted to the languages pysbd has rules for; it named the right
+  language for every document tried (up to 150 per dataset, 1,238 in all) at
+  about 3 ms a document.
+
 
 ### Retrieval methods
+1. Semantic (`dense` in `retrieval.py`): the query embedded with `embed_batch`, as
+   the chunks were, and searched in the run's Chroma collection by cosine
+2. Sparse (BM25, `sparse`): the run's persisted `BM25Retriever`, stemmed as the
+   index was (see `load_bm25`)
+3. Hybrid (`hybrid`): the top-k of each, merged by reciprocal rank fusion with
+   k = 60. Fusion uses ranks only, so BM25 scores and cosine similarities need
+   no normalising against each other
+4. Hierarchical: not implemented
 
+The query is not embedded through a LlamaIndex embedding class: those send a
+text with its newlines replaced, so it would not be embedded as the chunks were.
+For the same reason the fusion is written out rather than taken from
+`QueryFusionRetriever`.
 
-### Re-ranking methods
+### Re-ranking
+`rerank.py` sends the query and the retrieved chunks to the endpoint's `/rerank`
+route (bge-reranker-v2-m3) and reorders them by its score. A chunk is scored as
+its `text_to_embed`, so augmentations reach the reranker too. The endpoint
+accepts at most 64 documents a request and refuses a query–chunk pair over
+8,192 tokens rather than truncating it. `--rerank-max-tokens 8192
+--rerank-tokenizer BAAI/bge-m3` cuts a chunk to fit, counted with the
+reranker's own tokenizer, which matches the server's count exactly. Only
+GutenQA's 40,000-character chunks (9,700–10,800 tokens) need it; the reranker
+then reads only their first ~80%.
+
+### Generation
+Not run yet: see Evaluation.
+
+### Evaluation
+Chunking is compared on **retrieval** alone for now. An answer generated from
+the retrieved chunks measures the generator and its judge as much as the chunks.
+
+`evaluate.py` scores retrieval against the evidence spans the loaders record.
+It calls no model beyond retrieval itself and gives the same result every time:
+
+| Metric | Meaning |
+|---|---|
+| `hit@k` | a chunk among the first k overlaps an evidence span |
+| `mrr@10` | 1 / rank of the first such chunk (0 beyond 10) |
+| `ndcg@k` | binary relevance; the ideal ranking puts first every chunk of the index that overlaps evidence |
+| `precision@k` | share of the characters of the first k chunks that are evidence |
+| `recall@k` | share of the evidence characters the first k chunks cover |
+| `f1@k` | harmonic mean of precision@k and recall@k |
+| `doc_hit@k` | a chunk among the first k comes from an evidence document |
+
+Precision and recall are counted in characters. Overlapping evidence spans and
+overlapping chunks are counted once. Chroma's chunking evaluation (Smith and
+Troynikov, 2024) counts the same in tokens. Precision keeps the comparison fair:
+hit, MRR, nDCG and recall favour large chunks, and precision pays for the text
+they bring along. With short answer spans (SQuAD), precision is small for any
+chunk size, so read it across methods, not on its own. Each metric is computed before (`retrieved`) and after
+(`reranked`) reranking, at k = 1, 3, 5, 10, and over two groups of questions
+kept apart:
+- `evidence`: questions with spans in the run's rendering. All metrics apply.
+- `no_evidence`: questions tied to a document but with no span. These are
+  unanswerable questions, and all of LiteraryQA. Only `doc_hit` applies.
+
+Questions whose documents are not all in the index are left out, so an index
+over `--max-documents` is scored on its own documents' questions.
+
+Evidence differs by dataset:
+- **SQuAD:** several spans are alternative annotators' answers.
+- **Qasper:** spans merge every annotator's evidence, so `recall` undercounts.
+- **ConditionalQA:** spans are all needed together.
+- **TriviaQA:** the evidence is a whole document, so there `hit` = `doc_hit`, and precision and recall mean little.
+- **GutenQA:** 12% of spans are the source dataset's gold chunk, not the answer itself.
+
+```powershell
+.venv\Scripts\python.exe evaluate.py squad txt-sentence-max_tokens=256-overlap=0 --embedding-model bge-m3 --rerank-model bge-reranker-v2-m3 --rerank-max-tokens 8192 --rerank-tokenizer BAAI/bge-m3
+.venv\Scripts\python.exe compare.py                   # one Markdown table per dataset
+```
+
+Results go to `results/<dataset>/<index>/<set-up>/`:
+- `config.json`
+- `items.jsonl`: rankings per question, resumable
+- `summary.json`
+
+`--max-items` takes a sample in a fixed order (by a hash of the question id),
+so a larger sample contains a smaller one. The models default to
+`EMBEDDING_MODEL` and `RERANK_MODEL`. `--no-rerank` and
+`--retrieval dense|sparse|hybrid` give the other set-ups.
+
+Later, the following RAG metrics implemented in the [RAGAS library](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/).
+Context precision and recall need no generation and could check the span
+metrics where evidence is loose; faithfulness and answer relevancy need the
+generation step. The judge would be gpt-oss-120b.
+- [Context Precision](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/context_precision/#:~:text=Examples-,Context%20Precision,-The%20ContextPrecision%20metric)
+- [Context Recall](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/context_recall/)
+- [Faithfulness](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/faithfulness)
+- [Answer Relevancy](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/answer_relevance/)
+
+## Comparison of chunking methods
+We evaluate each chunking method on the different datasets with the following fixed pipeline:
+- No chunk augmentation
+- Embedding model : BGE-M3
+- Retrieval strategy : Hybrid
+- Reranking model : bge-reranker-v2-m3 (via the rerank endpoint)
+- Metrics : the evidence-span retrieval metrics of `evaluate.py` (see Evaluation); generation (gpt-oss-120b) and the RAGAS metrics come later
+
+markdown and html based chunking methods are evaluated on only markdown and html datasets respectively, while other methods are evaluated on txt datasets.
+
+Each method is run as one `ingest.py` index and one `evaluate.py` set-up:
+
+```powershell
+.venv\Scripts\python.exe ingest.py <dataset> --chunking <method> [--param ...] --embedding-model bge-m3 --embedding-max-tokens 8192 --embedding-tokenizer BAAI/bge-m3
+.venv\Scripts\python.exe evaluate.py <dataset> <index> --embedding-model bge-m3 --rerank-model bge-reranker-v2-m3 --rerank-max-tokens 8192 --rerank-tokenizer BAAI/bge-m3
+.venv\Scripts\python.exe compare.py <dataset>
+```
+
+Rows are comparable only when their indexes cover the same documents (the
+`docs` column), so every method of a dataset should be built with the same
+`--max-documents`.
