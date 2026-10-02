@@ -115,6 +115,18 @@ def get_text_to_embed(chunk):
     return chunk.original_text if chunk.text_to_embed is None else chunk.text_to_embed
 
 
+def resolve_overlap(overlap, size):
+    """The overlap of a size-bounded method as a count, in the unit of `size`.
+
+    An `overlap` below 1 is a share of the chunk size -- 0.25 at 256 tokens is
+    64 -- so one setting means the same at every size of a sweep. 1 and above
+    is a count as it stands, and 0 is no overlap either way.
+    """
+    if overlap < 0:
+        raise ValueError(f"overlap must not be negative, got {overlap}")
+    return round(overlap * size) if overlap < 1 else overlap
+
+
 def to_chunks(document, spans, doc_id="", metadata=None):
     """Number a sequence of (start, end) spans and attach the text they cover.
 
