@@ -81,10 +81,12 @@ def _request(query, documents, model, client, attempts):
     return scores
 
 
-def rerank(query, chunks, model, client=None, tokenizer=None, max_tokens=None, attempts=5):
+def rerank(query, chunks, model, client=None, tokenizer=None, max_tokens=None,
+           rerank_top_k=None, attempts=5):
     """Reorder `chunks`, `(Chunk, score)` pairs or chunks, by `model`'s relevance to `query`.
 
-    Returns `(Chunk, relevance)` pairs, most relevant first. With
+    Returns `(Chunk, relevance)` pairs, most relevant first: all of them, or
+    the best `rerank_top_k`. Every chunk is scored either way. With
     `max_tokens`, a chunk whose pair with the query would reach it is cut to
     fit first, counted by `tokenizer` (a Hugging Face tokenizer, required
     then); without it, such a chunk makes the request fail. Rate limits are
@@ -103,4 +105,4 @@ def rerank(query, chunks, model, client=None, tokenizer=None, max_tokens=None, a
     for start in range(0, len(documents), BATCH_SIZE):
         scores += _request(query, documents[start:start + BATCH_SIZE], model, client, attempts)
     # sorted() is stable: equal scores keep the retriever's order.
-    return sorted(zip(chunks, scores), key=lambda pair: -pair[1])
+    return sorted(zip(chunks, scores), key=lambda pair: -pair[1])[:rerank_top_k]

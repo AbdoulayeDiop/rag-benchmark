@@ -1,0 +1,30 @@
+{
+  "description": "Chunking methods compared on SQuAD and ConditionalQA, with the README's fixed pipeline: no augmentation, bge-m3, hybrid retrieval, no reranking. Markdown and HTML methods run only on datasets with that rendering. Run: .venv\\Scripts\\python.exe experiments.py experiments/chunking_eval_squad_conditionalqa.json",
+  "dataset": ["squad", "conditionalqa"],
+  "max_items": 2000,
+  "chunking": [
+    {"method": "fixed_token", "params": {"max_tokens": [256, 512, 1024], "overlap": [0, 0.25]}},
+    {"method": "sentence", "params": {"max_tokens": [256, 512, 1024], "overlap": [0, 0.25]}},
+    {"method": "markdown", "params": {"max_tokens": [256, 512, 1024]}},
+    {"method": "html", "params": {"max_tokens": [256, 512, 1024]}},
+    {"method": "semantic", "params": {"embedding_model": "bge-m3"}},
+    {"method": "clustered", "params": {"embedding_model": "bge-m3"}}
+  ],
+  "chunk_augmentation": [
+    {"method": "none"}
+  ],
+  "chunk_embedding": [
+    {
+      "description": "Over-long chunks (the semantic methods have no upper bound) are cut to bge-m3's limit, counted with its own tokenizer.",
+      "model": "bge-m3",
+      "tokenizer": "BAAI/bge-m3",
+      "context_length": 8192
+    }
+  ],
+  "retrieval": [
+    {"method": "hybrid", "params": {"top_k": 50}}
+  ],
+  "reranking": [
+    {"method": "none"}
+  ]
+}

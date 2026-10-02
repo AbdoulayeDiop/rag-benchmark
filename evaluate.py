@@ -236,7 +236,7 @@ def summarize(records, ks=KS):
 
 
 def build_config(index_directory, method="hybrid", embedding_model=None, top_k=50,
-                 rerank_model=None, rerank_depth=50, rerank_max_tokens=None):
+                 rerank_model=None, rerank_top_k=10, rerank_max_tokens=None):
     """Describe an evaluation: the index as it stands and the retrieval set-up.
 
     The index's document and chunk counts are part of it, so results are not
@@ -257,7 +257,7 @@ def build_config(index_directory, method="hybrid", embedding_model=None, top_k=5
         "top_k": top_k,
         "rrf_k": RRF_K if method == "hybrid" else None,
         "rerank_model": rerank_model,
-        "rerank_depth": rerank_depth if rerank_model else None,
+        "rerank_top_k": rerank_top_k if rerank_model else None,
         "rerank_max_tokens": rerank_max_tokens if rerank_model else None,
     }
     return json.loads(json.dumps(config))
@@ -280,14 +280,14 @@ def _ranking(results):
 
 
 def evaluate(dataset, index, method="hybrid", embedding_model=None, top_k=50, rerank_model=None,
-             rerank_depth=50, rerank_tokenizer=None, rerank_max_tokens=None, max_items=None,
-             name=None, workers=4):
+             rerank_top_k=10, rerank_tokenizer=None, rerank_max_tokens=None, max_items=None,
+             name=None, workers=16):
     """Evaluate one index under one retrieval set-up; return the summary.
 
     `index` is the run's directory name under `indexes/<dataset>/`. `top_k`
     chunks are retrieved per retriever (hybrid fuses two such lists and keeps
-    `top_k`), and the first `rerank_depth` of them are reranked by
-    `rerank_model`, if one is named, `workers` questions at a time. A chunk too
+    `top_k`). If `rerank_model` is named, it reranks all of them, `workers`
+    questions at a time, and its best `rerank_top_k` are kept. A chunk too
     long for the reranker is cut to `rerank_max_tokens`, counted by
     `rerank_tokenizer` (see `rerank.rerank`). `max_items` evaluates that many
     questions of the sample order; None, all of them.
@@ -296,7 +296,7 @@ def evaluate(dataset, index, method="hybrid", embedding_model=None, top_k=50, re
     if not (index_directory / "config.json").exists():
         raise FileNotFoundError(f"{index_directory} is not an index: run ingest.py first")
     config = build_config(index_directory, method, embedding_model, top_k, rerank_model,
-                          rerank_depth, rerank_max_tokens)
+                          rerank_top_k, rerank_max_tokens)
     results_directory = ROOT / "results" / dataset / index / (name or setup_name(config))
     results_directory.mkdir(parents=True, exist_ok=True)
     config_path = results_directory / "config.json"
@@ -323,8 +323,8 @@ def evaluate(dataset, index, method="hybrid", embedding_model=None, top_k=50, re
 
     def rerank_one(pair):
         item, retrieved = pair
-        return rerank(item["question"], retrieved[:rerank_depth], rerank_model, client,
-                      tokenizer, rerank_max_tokens)
+        return rerank(item["question"], retrieved, rerank_model, client, tokenizer,
+                      rerank_max_tokens, rerank_top_k=rerank_top_k)
 
     with ThreadPoolExecutor(workers) as pool:
         for start in tqdm(range(0, len(todo), BATCH_SIZE), desc="evaluating", unit="batch"):
@@ -332,7 +332,7 @@ def evaluate(dataset, index, method="hybrid", embedding_model=None, top_k=50, re
             questions = [item["question"] for item in batch]
             vectors = (embed_queries(questions, embedding_model, client) if store
                        else [None] * len(batch))
-            retrieved = [retrieve(question, vector, store, bm25, method, top_k)
+            retrieved = [retrieve(question, store, bm25, method, top_k, vector=vector)
                          for question, vector in zip(questions, vectors)]
             reranked = (list(pool.map(rerank_one, zip(batch, retrieved))) if rerank_model
                         else [None] * len(batch))
@@ -373,8 +373,9 @@ def main():
                              "RERANK_MODEL")
     parser.add_argument("--no-rerank", action="store_true",
                         help="score the retrievers' ranking alone, even if RERANK_MODEL is set")
-    parser.add_argument("--rerank-depth", type=int, default=50,
-                        help="how many of the retrieved chunks are reranked")
+    parser.add_argument("--rerank-top-k", type=int, default=10,
+                        help="chunks kept after reranking all the retrieved ones; the metrics "
+                             "go up to k = 10")
     parser.add_argument("--rerank-max-tokens", type=int,
                         default=os.environ.get("RERANK_MAX_TOKENS"),
                         help="the reranker's limit on a query and chunk together; longer chunks "
@@ -386,7 +387,11 @@ def main():
     parser.add_argument("--max-items", type=int, help="questions to score, from a fixed sample "
                                                       "order; all of them by default")
     parser.add_argument("--name", help="directory under results/<dataset>/<index>/")
-    parser.add_argument("--workers", type=int, default=4, help="rerank requests in flight at once")
+    # The endpoint used here reranks 64 questions in 10.7 s with 4 requests in
+    # flight, 5.4 s with 8, 4.5 s with 16 and 4.3 s with 32: 16 is about where
+    # it stops scaling.
+    parser.add_argument("--workers", type=int, default=16,
+                        help="rerank requests in flight at once")
     arguments = parser.parse_args()
     rerank_model = None if arguments.no_rerank else arguments.rerank_model
     if rerank_model and arguments.rerank_max_tokens and not arguments.rerank_tokenizer:
@@ -394,7 +399,7 @@ def main():
                      "set --rerank-tokenizer or RERANK_TOKENIZER as well")
     summary = evaluate(arguments.dataset, arguments.index, arguments.retrieval,
                        arguments.embedding_model, arguments.top_k, rerank_model,
-                       arguments.rerank_depth, arguments.rerank_tokenizer,
+                       arguments.rerank_top_k, arguments.rerank_tokenizer,
                        arguments.rerank_max_tokens, arguments.max_items, arguments.name,
                        arguments.workers)
     print(json.dumps(summary["metrics"], indent=2))

@@ -268,12 +268,11 @@ to build more.
 
 ### Chunking methods
 
-1. Fixed size (token/char)
+1. Fixed size: tokens (`fixed_token`, LlamaIndex `TokenTextSplitter`, cut on spaces) or characters (`fixed_char`)
 2. Structure preserving (with upper bound)
    1. Sentence
-   2. Recursive character splitter
-   3. Markdown (used on md documents only)
-   4. HTML (used on html documents only)
+   2. Markdown (used on md documents only)
+   3. HTML (used on html documents only)
 3. Semantic
    1. Breakpoint/consecutive sentences similarity
    2. Clustering-based
@@ -541,18 +540,60 @@ We evaluate each chunking method on the different datasets with the following fi
 - No chunk augmentation
 - Embedding model : BGE-M3
 - Retrieval strategy : Hybrid
-- Reranking model : bge-reranker-v2-m3 (via the rerank endpoint)
+- No reranking
 - Metrics : the evidence-span retrieval metrics of `evaluate.py` (see Evaluation); generation (gpt-oss-120b) and the RAGAS metrics come later
 
 markdown and html based chunking methods are evaluated on only markdown and html datasets respectively, while other methods are evaluated on txt datasets.
 
-Each method is run as one `ingest.py` index and one `evaluate.py` set-up:
+Each method is one `ingest.py` index and one `evaluate.py` set-up. A
+comparison is written as a JSON file under `experiments/`, in the shape of
+`experiments/schema.json`. `experiments.py` builds and scores every run it
+describes, then prints the table:
 
 ```powershell
-.venv\Scripts\python.exe ingest.py <dataset> --chunking <method> [--param ...] --embedding-model bge-m3 --embedding-max-tokens 8192 --embedding-tokenizer BAAI/bge-m3
-.venv\Scripts\python.exe evaluate.py <dataset> <index> --embedding-model bge-m3 --rerank-model bge-reranker-v2-m3 --rerank-max-tokens 8192 --rerank-tokenizer BAAI/bge-m3
-.venv\Scripts\python.exe compare.py <dataset>
+.venv\Scripts\python.exe experiments.py experiments/chunking_eval_squad_conditionalqa.json --dry-run   # list the runs
+.venv\Scripts\python.exe experiments.py experiments/chunking_eval_squad_conditionalqa.json             # run; re-run to resume
+.venv\Scripts\python.exe compare.py squad                                                               # every result for a dataset
 ```
+
+The file has one key per stage of the pipeline: `chunking`,
+`chunk_augmentation`, `chunk_embedding`, `retrieval` and `reranking`. Each
+lists alternatives as `{"method": ..., "params": {...}}`, and `dataset` is one
+name or a list. Every combination of a dataset and one alternative per stage
+is a run. Runs that differ only in retrieval or reranking share one index,
+built once.
+
+- **chunking:** a method and its parameters. Models it calls are parameters
+  too: `llm_model` for `lumberchunker`, `embedding_model` for the semantic
+  chunkers. `rendering` (`txt`, `md`, `html`) overrides the method's own.
+- **chunk_augmentation:** one method per entry, or `"none"`; `params.llm_model`
+  names its model. If left out, chunks are not augmented.
+- **chunk_embedding:** `model`, plus `tokenizer` and `context_length` to cut
+  chunks over the model's limit. Used only to embed chunks.
+- **retrieval:** `dense`, `sparse` or `hybrid`, with `params.top_k`.
+- **reranking:** `cross_encoder` (the `/rerank` model) or `"none"`. Its
+  `params` are `model`, `top_k` (chunks kept; every retrieved chunk is
+  reranked), and `max_tokens` with `tokenizer`. If left
+  out, results are not reranked.
+
+Optional `max_documents` and `max_items` cap a run for a quick check, and any
+entry may carry a `description` in place of a comment.
+
+A list inside `params` is a sweep: `"max_tokens": [256, 512], "overlap": [0, 0.25]`
+runs every combination, each as its own index. A parameter whose value is
+itself a list (`html`'s `headings`) is not swept.
+
+- **Overlap:** an `overlap` below 1 is a share of the chunk size (0.25 at 256
+  tokens is 64). Combinations whose overlap is not below the size are skipped.
+- **Renderings:** a dataset without the rendering a method reads (SQuAD has no
+  `md` or `html`) is skipped for that method, so one file can list every
+  dataset.
+- **Dataset names** must match their directory exactly, case included.
+- **No environment variables:** nothing is read from the environment, so the
+  file is the record of what was run.
+- **Checked up front:** every run is validated before the first starts.
+  `--keep-going` moves on past a failed index; `--skip-evaluation` only builds
+  the indexes.
 
 Rows are comparable only when their indexes cover the same documents (the
 `docs` column), so every method of a dataset should be built with the same

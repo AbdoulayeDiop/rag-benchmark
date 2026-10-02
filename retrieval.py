@@ -118,13 +118,23 @@ def reciprocal_rank_fusion(rankings, top_k=50, k=RRF_K):
     return sorted(fused.values(), key=lambda pair: -pair[1])[:top_k]
 
 
-def retrieve(query, vector, store, bm25, method="hybrid", top_k=50):
+def retrieve(query, store, bm25, method="hybrid", top_k=50, embedding_model=None, vector=None,
+             client=None):
     """Retrieve the best `top_k` chunks for `query` with `method`.
 
-    `vector` is the query's embedding, for dense and hybrid, and `store` and
-    `bm25` come from `open_stores`. Hybrid takes `top_k` from each retriever
-    before fusing, so that it sees as deep into each list as either does alone.
+    `store` and `bm25` come from `open_stores`. Dense and hybrid embed the
+    query with `embedding_model`, the model the index was embedded with,
+    through `client` (default `get_client()`). `vector` is the query's
+    embedding already made: many queries are embedded far faster together
+    (`embed_queries`, 64 a request) than one request each, so a caller with
+    many passes them in and `embedding_model` is not needed. Hybrid takes
+    `top_k` from each retriever before fusing, so that it sees as deep into
+    each list as either does alone.
     """
+    if method != "sparse" and vector is None:
+        if not embedding_model:
+            raise ValueError(f"{method} retrieval embeds the query: name the embedding model")
+        vector = embed_queries([query], embedding_model, client)[0]
     if method == "dense":
         return dense(store, vector, top_k)
     if method == "sparse":

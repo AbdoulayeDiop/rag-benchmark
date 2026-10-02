@@ -14,7 +14,8 @@ There is no test suite, linter config or package metadata yet. The repo is a
 set of importable modules, one script per dataset, `ingest.py`, which runs
 chunking, augmentation and embedding for one dataset and one configuration,
 `evaluate.py`, which scores one index's retrieval against the evidence spans,
-and `compare.py`, which tabulates the evaluations.
+`compare.py`, which tabulates the evaluations, and `experiments.py`, which
+runs both for every combination an experiment file describes.
 
 ## Commands
 
@@ -27,10 +28,11 @@ Windows, Python 3.13, virtualenv in `.venv`. Run everything from the repository 
 .venv\Scripts\python.exe ingest.py squad --param max_tokens=256 --max-documents 3   # build an index
 .venv\Scripts\python.exe evaluate.py squad txt-sentence-max_tokens=256 --embedding-model bge-m3 --rerank-model bge-reranker-v2-m3   # score it
 .venv\Scripts\python.exe compare.py                       # Markdown table per dataset
+.venv\Scripts\python.exe experiments.py experiments/chunking_eval_squad_conditionalqa.json   # a whole comparison grid
 ```
 
 `ingest.py` flags: `--chunking`, `--param KEY=VALUE` (repeatable, JSON values),
-`--rendering`, `--augment`, `--llm-model`, `--embedding-model`,
+`--rendering`, `--augment`, `--llm-model`, `--embedding-model`, `--chunking-embedding-model` (the semantic chunkers' model, if not `--embedding-model`),
 `--embedding-max-tokens` and `--embedding-tokenizer` (truncate over-long texts
 before embedding; for bge-m3, `8192` and `BAAI/bge-m3`), `--max-documents`,
 `--name`, `--skip-embedding`. A small `--max-documents` run is the quickest
@@ -38,7 +40,7 @@ end-to-end check; re-running the same command resumes rather than repeats.
 
 `evaluate.py <dataset> <index>` flags: `--retrieval dense|sparse|hybrid`,
 `--top-k`, `--embedding-model`, `--rerank-model` or `--no-rerank`,
-`--rerank-depth`, `--rerank-max-tokens` and `--rerank-tokenizer` (cut chunks to
+`--rerank-top-k` (chunks kept after reranking all retrieved), `--rerank-max-tokens` and `--rerank-tokenizer` (cut chunks to
 the reranker's pair limit; `8192` and `BAAI/bge-m3`), `--max-items` (a fixed
 sample order), `--name`. It resumes too, and refuses to extend results after
 the index has grown.
@@ -55,8 +57,11 @@ explicitly, and only the entry points fall back to the environment --
 `EMBEDDING_MODEL`, and `evaluate.py` reads `EMBEDDING_MODEL` and `RERANK_MODEL`.
 Do not add a default model back. The experiments here use
 `bge-m3` for embeddings and `mistral-small-3-2-24b-instruct-2506` for generation. The
-endpoint allows 128,000 input tokens per minute and at most 64 texts per
-embedding request; both limits shape the code. Its `/rerank` route
+endpoint allows LLM calls 128,000 input tokens per minute, which makes
+augmentation and LumberChunker the slow stages. Embedding is not under that
+limit: one request at a time runs at about 740,000 tokens a minute, and 8
+concurrent requests at about 2.8M (measured 2026-10-02). An embedding request
+takes at most 64 texts. Its `/rerank` route
 (`bge-reranker-v2-m3`) takes at most 64 documents a request and refuses a
 query–document pair over 8,192 tokens.
 
@@ -78,6 +83,7 @@ query–document pair over 8,192 tokens.
 | `evaluate.py` | Retrieval evaluation against evidence spans (hit, MRR, nDCG, character precision/recall/F1, doc hit), before and after reranking |
 | `results/<dataset>/<index>/<set-up>/` | `evaluate.py` output: `config.json`, `items.jsonl` (rankings, the checkpoint), `summary.json`. Gitignored |
 | `compare.py` | Every `summary.json` as one Markdown table per dataset |
+| `experiments.py`, `experiments/*.json` | Runner. A JSON file in the shape of `experiments/schema.json`: `dataset` (name or list), and per stage (`chunking`, `chunk_augmentation`, `chunk_embedding`, `retrieval`, `reranking`) a list of `{method, params}` alternatives; every combination is a run, indexes shared across retrieval/reranking. Models a chunker calls are its params (`llm_model`, `embedding_model`); lists in `params` sweep; a dataset lacking a method's rendering is skipped; nothing from the environment |
 | `app.py` | Streamlit chunk visualizer |
 | `papers.md`, `archive/datasets.md` | Reading list and dataset survey notes |
 
@@ -117,6 +123,7 @@ Every method has the signature `method(document, ..., doc_id="") -> list[Chunk]`
 | Function | File | Notes |
 |---|---|---|
 | `fixed_char` | `fixed.py` | Character windows, hand-sliced |
+| `fixed_token` | `fixed.py` | LlamaIndex `TokenTextSplitter`: token windows cut on spaces |
 | `sentence` | `structure.py` | LlamaIndex `SentenceSplitter`; covers both the sentence and recursive methods |
 | `markdown` | `markdown.py` | `MarkdownNodeParser`, then `SentenceSplitter` for sections over budget; heading path in metadata |
 | `html` | `html.py` | Outline read from BeautifulSoup source positions; no library keeps the markup |
@@ -128,6 +135,7 @@ Conventions:
 - Prefer a LlamaIndex node parser. Write plain code only where no library fits, and say why in the module docstring, as the existing modules do.
 - Budgets are in tokens (tiktoken `cl100k_base` via LlamaIndex's `get_tokenizer`), not characters. Polish costs about twice the tokens per character that English does.
 - Sentence segmentation is pysbd, run per paragraph (`segment.py`). `language` defaults to `"auto"`: `detect_language` (lingua, restricted to the languages pysbd supports) reads it from the document. A pysbd code (`"pl"`, `"en"`) overrides it. `ingest.py` detects once per run and records the result in `config.json`.
+- `overlap` (`sentence`, `fixed_token`, `fixed_char`) below 1 is a share of the chunk size (`resolve_overlap` in `base.py`): 0.25 at `max_tokens=256` is 64 tokens.
 - Paragraphs are separated by a blank line (`PARAGRAPH_SEPARATOR = "\n\n"`), not LlamaIndex's default of three newlines.
 
 ## Augmentation

@@ -67,8 +67,8 @@ from tqdm import tqdm
 from augmentation import (add_context, add_keywords, add_questions, add_summary, add_title,
                           use_summary)
 from chunking import (Chunk, build_text_to_embed, clustered, detect_language, fixed_char,
-                      get_text_to_embed, html, markdown, openai_embedding, semantic, sentence,
-                      tiled, update_chunk_metadata, verify)
+                      fixed_token, get_text_to_embed, html, markdown, openai_embedding,
+                      semantic, sentence, tiled, update_chunk_metadata, verify)
 from chunking.lumberchunker import lumberchunker
 from embedding import BATCH_SIZE, embed_batch, load_tokenizer
 from llm import get_client
@@ -80,9 +80,9 @@ RENDERINGS = {"txt": ("documents", ".txt"),
               "md": ("documents_md", ".md"),
               "html": ("documents_html", ".html")}
 
-CHUNKERS = {"fixed_char": fixed_char, "sentence": sentence, "markdown": markdown, "html": html,
-            "semantic": semantic, "tiled": tiled, "clustered": clustered,
-            "lumberchunker": lumberchunker}
+CHUNKERS = {"fixed_char": fixed_char, "fixed_token": fixed_token, "sentence": sentence,
+            "markdown": markdown, "html": html, "semantic": semantic, "tiled": tiled,
+            "clustered": clustered, "lumberchunker": lumberchunker}
 
 # The rendering a method reads unless told otherwise. The others default to
 # plain text, but any of them can be pointed at another rendering: `sentence`
@@ -136,7 +136,8 @@ def read_documents(dataset, rendering="txt", max_documents=None):
 
 
 def build_config(dataset, chunking="sentence", params=None, rendering=None, augmentations=(),
-                 language="en", llm_model=None, embedding_model=None):
+                 language="en", llm_model=None, embedding_model=None,
+                 chunking_embedding_model=None):
     """Describe a run: everything that decides what its chunks contain.
 
     `params` are the chunking method's keyword arguments; the ones left out are
@@ -145,7 +146,10 @@ def build_config(dataset, chunking="sentence", params=None, rendering=None, augm
     detects it. A model is recorded only where the run calls it, which is what
     lets one set of chunks be embedded by several models -- and it must be
     named where it is called, since no model is assumed.
+    `chunking_embedding_model` is the model a semantic chunker embeds
+    sentences with, and defaults to `embedding_model`.
     """
+    chunking_embedding_model = chunking_embedding_model or embedding_model
     if chunking not in CHUNKERS:
         raise ValueError(f"unknown chunking method {chunking!r}; choose from {sorted(CHUNKERS)}")
     unknown = [name for name in augmentations if name not in AUGMENTERS]
@@ -163,7 +167,7 @@ def build_config(dataset, chunking="sentence", params=None, rendering=None, augm
     if calls_llm and not llm_model:
         raise ValueError("this run calls an LLM (augmentation or lumberchunker): name it with "
                          "--llm-model or LLM_MODEL")
-    if "embed_model" in accepted and not embedding_model:
+    if "embed_model" in accepted and not chunking_embedding_model:
         raise ValueError(f"{chunking} chunking embeds sentences: name the model with "
                          f"--embedding-model or EMBEDDING_MODEL")
     config = {
@@ -171,7 +175,8 @@ def build_config(dataset, chunking="sentence", params=None, rendering=None, augm
         "rendering": rendering or DEFAULT_RENDERING.get(chunking, "txt"),
         "language": language,
         "chunking": {"method": chunking, "params": {**defaults, **params}},
-        "chunking_embedding_model": embedding_model if "embed_model" in accepted else None,
+        "chunking_embedding_model": (chunking_embedding_model if "embed_model" in accepted
+                                     else None),
         "augmentations": augmentations,
         "llm_model": llm_model if calls_llm else None,
     }
@@ -468,10 +473,11 @@ def _write_json(path, value):
 def ingest(dataset, chunking="sentence", params=None, rendering=None, augmentations=(),
            language="auto", llm_model=None, embedding_model=None,
            max_documents=None, name=None, workers=4, embed=True, embedding_tokenizer=None,
-           embedding_max_tokens=None):
+           embedding_max_tokens=None, chunking_embedding_model=None):
     """Build or continue the index for one run, and return its directory.
 
-    The arguments up to `embedding_model` are those of `build_config`.
+    The arguments up to `embedding_model`, and `chunking_embedding_model`,
+    are those of `build_config`.
     `llm_model` is needed by a run that augments or uses `lumberchunker`, and
     `embedding_model` by one that embeds. `name` is the run's directory under
     `indexes/<dataset>/` and defaults to `run_name`. `embed=False` writes the
@@ -494,7 +500,7 @@ def ingest(dataset, chunking="sentence", params=None, rendering=None, augmentati
         openings = "\n\n".join(text[:1000] for _, text in read_documents(dataset, "txt", 5))
         language = detect_language(openings, sample=len(openings))
     config = build_config(dataset, chunking, params, rendering, augmentations, language,
-                          llm_model, embedding_model)
+                          llm_model, embedding_model, chunking_embedding_model)
     run_directory = ROOT / "indexes" / dataset / (name or run_name(config, params))
     run_directory.mkdir(parents=True, exist_ok=True)
     config_path = run_directory / "config.json"
@@ -552,6 +558,9 @@ def main():
     parser.add_argument("--embedding-model", default=os.environ.get("EMBEDDING_MODEL"),
                         help="model for embedding and the semantic chunkers; "
                              "defaults to EMBEDDING_MODEL")
+    parser.add_argument("--chunking-embedding-model",
+                        help="model the semantic chunkers embed sentences with, if not "
+                             "--embedding-model")
     parser.add_argument("--embedding-max-tokens", type=int,
                         default=os.environ.get("EMBEDDING_MAX_TOKENS"),
                         help="the embedding model's input limit; longer texts are cut to fit. "
@@ -573,7 +582,8 @@ def main():
            arguments.embedding_model, arguments.max_documents, arguments.name,
            arguments.workers, embed=not arguments.skip_embedding,
            embedding_tokenizer=arguments.embedding_tokenizer,
-           embedding_max_tokens=arguments.embedding_max_tokens)
+           embedding_max_tokens=arguments.embedding_max_tokens,
+           chunking_embedding_model=arguments.chunking_embedding_model)
 
 
 if __name__ == "__main__":

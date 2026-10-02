@@ -1,0 +1,35 @@
+{
+  "description": "Chunking methods compared on SQuAD (100 documents), with the README's fixed pipeline: no augmentation, bge-m3, hybrid retrieval, bge-reranker-v2-m3. Run: .venv\\Scripts\\python.exe experiments.py experiments/squad.json",
+  "dataset": ["squad", "conditionalqa"],
+  "chunking": [
+    {
+      "method": "",
+      "params": {}
+    }
+  ],
+  "chunk_augmentation": [
+    {
+      "method": "",
+      "params": {}
+    }
+  ],
+  "chunk_embedding": [
+    {
+      "model": "bge-m3",
+      "tokenizer": "BAAI/bge-m3",
+      "context_length": 8192
+    }
+  ],
+  "retrieval": [
+    {
+      "method": "",
+      "params": {}
+    }
+  ],
+  "reranking": [
+    {
+      "method": "",
+      "params": {}
+    }
+  ]
+}
