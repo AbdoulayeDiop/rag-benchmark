@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 Experiments comparing RAG methods stage by stage: dataset preparation, chunking,
 chunk augmentation, embedding, retrieval, reranking and retrieval evaluation
-(generation and the RAGAS metrics are not written yet). [README.md](README.md) is the methodology record: dataset statistics,
+(generation, and the RAGAS metrics that need it, are not written yet; RAGAS context precision and recall are). [README.md](README.md) is the methodology record: dataset statistics,
 per-dataset processing decisions and cost tables live there. Keep it in step
 with the code when a method or a loader changes.
 
@@ -28,7 +28,9 @@ Windows, Python 3.13, virtualenv in `.venv`. Run everything from the repository 
 .venv\Scripts\python.exe ingest.py squad --param max_tokens=256 --max-documents 3   # build an index
 .venv\Scripts\python.exe evaluate.py squad txt-sentence-max_tokens=256 --embedding-model bge-m3 --rerank-model bge-reranker-v2-m3   # score it
 .venv\Scripts\python.exe compare.py                       # Markdown table per dataset
-.venv\Scripts\python.exe experiments.py experiments/chunking_eval_squad_conditionalqa.json   # a whole comparison grid
+.venv\Scripts\python.exe compare_chunking.py              # chunking methods, baseline pipeline only
+.venv\Scripts\python.exe evaluate_ragas.py squad txt-fixed_token-max_tokens=256-overlap=0.25 dense-bge-m3-top_k=50 --judge-model gpt-oss-120b --requests-per-minute 10   # RAGAS context precision/recall
+.venv\Scripts\python.exe experiments.py experiments/chunking_eval.json   # a whole comparison grid
 ```
 
 `ingest.py` flags: `--chunking`, `--param KEY=VALUE` (repeatable, JSON values),
@@ -54,7 +56,8 @@ OpenAI-compatible endpoint, not OpenAI itself. No model name is hard-coded:
 every library function that calls a model takes `model` (or `embed_model`)
 explicitly, and only the entry points fall back to the environment --
 `ingest.py --llm-model/--embedding-model` and `app.py` read `LLM_MODEL` and
-`EMBEDDING_MODEL`, and `evaluate.py` reads `EMBEDDING_MODEL` and `RERANK_MODEL`.
+`EMBEDDING_MODEL`, `evaluate.py` reads `EMBEDDING_MODEL` and `RERANK_MODEL`, and
+`evaluate_ragas.py` reads `JUDGE_MODEL`.
 Do not add a default model back. The experiments here use
 `bge-m3` for embeddings and `mistral-small-3-2-24b-instruct-2506` for generation. The
 endpoint allows LLM calls 128,000 input tokens per minute, which makes
@@ -74,15 +77,17 @@ query–document pair over 8,192 tokens.
 | `datasets/literaryqa/vendor/` | Upstream LiteraryQA cleaning code pinned at the commit in `vendor/COMMIT`. Do not edit; `structure.py` is the adapted variant |
 | `chunking/` | Chunking methods and the `Chunk` type |
 | `augmentation/` | Chunk augmentation methods |
-| `llm.py` | `get_client()` and `call_llm()`, shared by `chunking/lumberchunker.py` and `augmentation/` |
+| `llm.py` | `get_client()` and `call_llm()`, shared by `chunking/lumberchunker.py` and `augmentation/`; `usage()`/`usage_since()`: tokens the endpoint reports, counted by an httpx hook (`count_usage`) on every client, and rate-limit waits |
 | `embedding.py` | `embed_batch()`, on the plain OpenAI client; handles over-long inputs |
 | `ingest.py` | Pipeline runner: documents → chunks → augmented chunks → Chroma collection and BM25 index, resumable per document and per batch |
-| `indexes/<dataset>/<run>/` | Runner output: `config.json`, `chunks.jsonl`, `documents.jsonl`, `chroma/` (LlamaIndex `ChromaVectorStore`), `bm25/` (LlamaIndex `BM25Retriever`; load it with `load_bm25`, which restores the stemming `persist` drops). Node metadata is the whole chunk; `node_to_chunk` rebuilds it. `chunks.jsonl` is the checkpoint and verification record, not read by retrieval. Gitignored |
+| `indexes/<dataset>/<run>/` | Runner output: `config.json`, `chunks.jsonl`, `documents.jsonl` (with each document's chunking and augmentation cost), `cost.json` (those added up, and embedding per model), `chroma/` (LlamaIndex `ChromaVectorStore`), `bm25/` (LlamaIndex `BM25Retriever`; load it with `load_bm25`, which restores the stemming `persist` drops). Node metadata is the whole chunk; `node_to_chunk` rebuilds it. `chunks.jsonl` is the checkpoint and verification record, not read by retrieval. Gitignored |
 | `retrieval.py` | `dense`, `sparse`, `hybrid` (reciprocal rank fusion) over a run's stores; returns `(Chunk, score)` pairs |
 | `rerank.py` | `rerank()` through the endpoint's `/rerank`, on the plain OpenAI client's `post`; cuts chunks to the pair limit |
-| `evaluate.py` | Retrieval evaluation against evidence spans (hit, MRR, nDCG, character precision/recall/F1, doc hit), before and after reranking |
+| `evaluate.py` | Retrieval evaluation against evidence spans (hit, MRR, nDCG, evidence recall, doc hit), before and after reranking |
+| `evaluate_ragas.py` | RAGAS `ContextPrecision` and `ContextRecall` over an evaluated set-up's stored rankings, judged by an LLM on a sample (200), paced to the judge's requests per minute; chunks shown via `build_text_for_llm`. Output in `results/.../<set-up>/ragas-<judge>-k=<k>/` |
 | `results/<dataset>/<index>/<set-up>/` | `evaluate.py` output: `config.json`, `items.jsonl` (rankings, the checkpoint), `summary.json`. Gitignored |
-| `compare.py` | Every `summary.json` as one Markdown table per dataset |
+| `compare.py` | Every `summary.json` as one Markdown table per dataset: each method's best parameters on the first metric (default `evidence_recall@5`), or every combination with `--all`; `--cost` adds build cost per document and query seconds |
+| `compare_chunking.py` | The chunking comparison: only results of the baseline pipeline (no augmentation, bge-m3, dense, no reranking), each method at its best per dataset, and an overview of methods by datasets with the mean difference to `fixed_token` |
 | `experiments.py`, `experiments/*.json` | Runner. A JSON file in the shape of `experiments/schema.json`: `dataset` (name or list), and per stage (`chunking`, `chunk_augmentation`, `chunk_embedding`, `retrieval`, `reranking`) a list of `{method, params}` alternatives; every combination is a run, indexes shared across retrieval/reranking. Models a chunker calls are its params (`llm_model`, `embedding_model`); lists in `params` sweep; a dataset lacking a method's rendering is skipped; nothing from the environment |
 | `app.py` | Streamlit chunk visualizer |
 | `papers.md`, `archive/datasets.md` | Reading list and dataset survey notes |

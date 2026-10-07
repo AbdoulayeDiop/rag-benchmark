@@ -24,14 +24,12 @@ bge-m3's tokenizer, which the reranker shares. That count is exact: a pair cut
 to 8,192 by `fit_documents` is accepted, and one cut to 8,193 refused.
 """
 
-import time
-
 import httpx
 from openai import RateLimitError
 
 from chunking import get_text_to_embed
 from embedding import truncate_to_tokens
-from llm import get_client
+from llm import get_client, wait_for_rate_limit
 
 # Documents per request: the most the endpoint used here accepts.
 BATCH_SIZE = 64
@@ -71,7 +69,7 @@ def _request(query, documents, model, client, attempts):
         except RateLimitError:
             if attempt == attempts - 1:
                 raise
-            time.sleep(60)
+            wait_for_rate_limit()
     scores = [None] * len(documents)
     for result in response.json()["results"]:
         scores[result["index"]] = result["relevance_score"]

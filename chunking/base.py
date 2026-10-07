@@ -86,9 +86,7 @@ def build_text_to_embed(original_text, metadata):
     """
     if metadata.get("summary"):
         return metadata["summary"]
-    text = original_text
-    if metadata.get("markup") == "html":
-        text = BeautifulSoup(original_text, "html.parser").get_text(" ", strip=True) or original_text
+    text = _plain_text(original_text, metadata)
     pieces = [metadata.get("parent_document_title"),
               metadata.get("parent_document_summary"),
               metadata.get("context"),
@@ -96,6 +94,41 @@ def build_text_to_embed(original_text, metadata):
               "\n".join(metadata.get("questions") or []),
               text]
     return SEPARATOR.join(piece for piece in pieces if piece)
+
+
+# The metadata keys the augmentation methods set, in the order
+# `build_text_for_llm` shows them.
+AUGMENTATION_KEYS = ("parent_document_title", "parent_document_summary", "context", "keywords",
+                     "questions", "summary")
+
+
+def _plain_text(original_text, metadata):
+    """The chunk's text without its tags, if it is HTML; see `build_text_to_embed`."""
+    if metadata.get("markup") == "html":
+        return BeautifulSoup(original_text, "html.parser").get_text(" ", strip=True) or original_text
+    return original_text
+
+
+def build_text_for_llm(original_text, metadata):
+    """What an LLM reading a chunk is shown: its augmentations, labelled, above its text.
+
+    `build_text_to_embed` joins the augmentations' values bare, which suits an
+    encoder, but a model asked to judge or answer from a chunk cannot tell a
+    generated title or a hypothetical question from the document's own words.
+    Here each augmentation is headed by its metadata key, in `AUGMENTATION_KEYS`
+    order, and the chunk's text comes last under `original_text` -- tags
+    stripped for HTML. A chunk summary (`use_summary`) is shown above the text
+    like the others, not in its place: the model needs the text itself.
+    """
+    pieces = []
+    for key in AUGMENTATION_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, list):
+            value = "\n".join(value)
+        if value:
+            pieces.append(f"{key}:\n{value}")
+    pieces.append(f"original_text:\n{_plain_text(original_text, metadata)}")
+    return SEPARATOR.join(pieces)
 
 
 def update_chunk_metadata(chunk, **metadata):

@@ -18,19 +18,13 @@ the retrieval itself, and come out the same every time:
     mrr@10           1 / rank of the first such chunk, 0 beyond 10
     ndcg@k           binary relevance (the chunk overlaps evidence); the ideal
                      ranking puts every chunk of the index that does first
-    precision@k      share of the characters of the first k chunks that are evidence
-    recall@k         share of the evidence characters the first k chunks cover
-    f1@k             harmonic mean of the two
+    evidence_recall@k  share of the evidence characters the first k chunks
+                     cover, overlapping spans and chunks counted once
     doc_hit@k        a chunk among the first k is from an evidence document
 
-Precision and recall are counted in characters -- Chroma's chunking
-evaluation (Smith and Troynikov, 2024) counts the same in tokens -- so they
-share a unit and their F1 means something. Precision is what keeps the comparison fair to small chunks: the
-other metrics favour large ones -- a method that cuts a book into four pieces
-hits the evidence at k = 1 by covering a quarter of the book -- and precision
-pays for that quarter. Where evidence is a short answer span, as in SQuAD,
-precision is small for any chunk size; it compares methods, it is not good
-or bad in itself.
+All of them favour large chunks -- a method that cuts a book into four pieces
+hits the evidence at k = 1 by covering a quarter of the book -- so they are
+read against the chunk length `compare.py` shows beside them.
 
 Each metric is computed twice, on the retrievers' ranking (`retrieved`) and on
 the reranker's (`reranked`), and over two groups of questions kept apart:
@@ -44,11 +38,11 @@ about a document it lacks could never be answered.
 
 A dataset's evidence is not all alike, which the per-dataset tables should
 note. SQuAD's several spans are the answers of several annotators, each enough
-alone, and Qasper's merge the evidence of several annotators, so `recall`
-there undercounts an answerable context. ConditionalQA's are the page elements
-an answer and its conditions rest on together, which `recall` measures and
-`hit` does not. TriviaQA's evidence is a whole document, so `hit` is
-`doc_hit` there and `precision` and `recall` mean little. GutenQA's "chunk" matches (12%)
+alone, and Qasper's merge the evidence of several annotators, so
+`evidence_recall` there undercounts an answerable context. ConditionalQA's are
+the page elements an answer and its conditions rest on together, which
+`evidence_recall` measures and `hit` does not. TriviaQA's evidence is a whole
+document, so `hit` is `doc_hit` there and `evidence_recall` means little. GutenQA's "chunk" matches (12%)
 are the gold chunk of the source dataset, longer than the answer itself.
 
 The questions are taken in an order fixed by a hash of their ids, so
@@ -57,6 +51,15 @@ smaller. Questions are retrieved and reranked a batch at a time and appended
 to `items.jsonl` as each batch finishes; a run stopped anywhere continues
 after the questions already there. `items.jsonl` keeps the rankings, not the
 metrics, and `summary.json` is recomputed from it at the end of every run.
+
+Each question also records its `cost`: `retrieval_seconds` and the query's
+`embedding_tokens`, and with a reranker `rerank_seconds` and `rerank_tokens`.
+Queries are embedded a batch at a time, so a question's share of that request
+is the batch's divided evenly; the search itself and the reranking are timed
+per question. `summary.json` gives their means, and the medians of the
+seconds, with the `workers` that reranked side by side -- the endpoint shared
+between them, the seconds of a reranked question depend on it. A question
+scored before costs were recorded has none, and `questions` says how many do.
 """
 
 import argparse
@@ -65,14 +68,16 @@ import json
 import math
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from statistics import mean, median
 
 from tqdm import tqdm
 
 from embedding import BATCH_SIZE, load_tokenizer
 from ingest import ROOT, _append_jsonl, _read_json, _read_jsonl, _write_json, load_chunks
-from llm import get_client
+from llm import get_client, usage, usage_since
 from rerank import rerank
 from retrieval import METHODS, RRF_K, embed_queries, open_stores, retrieve
 
@@ -208,12 +213,7 @@ def score(ranking, record, ks=KS):
         retrieved = _intervals(ranking[:k])
         covered = sum(_intersection(intervals, retrieved.get(doc, []))
                       for doc, intervals in evidence.items())
-        precision = covered / _length(retrieved) if retrieved else 0.0
-        recall = covered / evidence_chars if evidence_chars else 0.0
-        metrics[f"precision@{k}"] = precision
-        metrics[f"recall@{k}"] = recall
-        metrics[f"f1@{k}"] = (2 * precision * recall / (precision + recall)
-                              if precision + recall else 0.0)
+        metrics[f"evidence_recall@{k}"] = covered / evidence_chars if evidence_chars else 0.0
     return metrics
 
 
@@ -232,6 +232,20 @@ def summarize(records, ks=KS):
             scores = [score(record[stage], record, ks) for record in members]
             summary["metrics"][stage][group] = {
                 name: sum(s[name] for s in scores) / len(scores) for name in scores[0]}
+    return summary
+
+
+def summarize_cost(records, workers):
+    """The mean cost of a question, and the median of its seconds, over the records that have one."""
+    costs = [record["cost"] for record in records if "cost" in record]
+    if not costs:
+        return {}
+    summary = {"questions": len(costs), "workers": workers}
+    for name in sorted({name for cost in costs for name in cost}):
+        values = [cost.get(name, 0) for cost in costs]
+        summary[name] = round(mean(values), 6)
+        if name.endswith("_seconds"):
+            summary[name.replace("_seconds", "_seconds_median")] = round(median(values), 6)
     return summary
 
 
@@ -322,25 +336,40 @@ def evaluate(dataset, index, method="hybrid", embedding_model=None, top_k=50, re
     tokenizer = load_tokenizer(rerank_tokenizer) if rerank_model and rerank_max_tokens else None
 
     def rerank_one(pair):
+        """Rerank one question's chunks; return them and the cost, which is its thread's."""
         item, retrieved = pair
-        return rerank(item["question"], retrieved, rerank_model, client, tokenizer,
-                      rerank_max_tokens, rerank_top_k=rerank_top_k)
+        before, started = usage(thread=True), time.perf_counter()
+        reranked = rerank(item["question"], retrieved, rerank_model, client, tokenizer,
+                          rerank_max_tokens, rerank_top_k=rerank_top_k)
+        spent = usage_since(before, thread=True)
+        return reranked, {"rerank_seconds": round(time.perf_counter() - started, 6),
+                          "rerank_tokens": spent.get("rerank_tokens", 0)}
 
     with ThreadPoolExecutor(workers) as pool:
         for start in tqdm(range(0, len(todo), BATCH_SIZE), desc="evaluating", unit="batch"):
             batch = todo[start:start + BATCH_SIZE]
             questions = [item["question"] for item in batch]
+            before, started = usage(), time.perf_counter()
             vectors = (embed_queries(questions, embedding_model, client) if store
                        else [None] * len(batch))
-            retrieved = [retrieve(question, store, bm25, method, top_k, vector=vector)
-                         for question, vector in zip(questions, vectors)]
+            # The batch's one request, shared evenly between its questions.
+            shared = {"seconds": (time.perf_counter() - started) / len(batch),
+                      "tokens": usage_since(before).get("embedding_tokens", 0) / len(batch)}
+            retrieved, costs = [], []
+            for question, vector in zip(questions, vectors):
+                started = time.perf_counter()
+                retrieved.append(retrieve(question, store, bm25, method, top_k, vector=vector))
+                costs.append({"retrieval_seconds": round(time.perf_counter() - started
+                                                         + shared["seconds"], 6),
+                              "embedding_tokens": round(shared["tokens"], 3)})
             reranked = (list(pool.map(rerank_one, zip(batch, retrieved))) if rerank_model
-                        else [None] * len(batch))
+                        else [(None, {})] * len(batch))
             records = []
-            for item, first, second in zip(batch, retrieved, reranked):
+            for item, first, (second, rerank_cost), cost in zip(batch, retrieved, reranked,
+                                                                 costs):
                 record = {**item, "relevant_chunks": relevant_chunks(
                     [tuple(span) for span in item["spans"]], chunks_by_document),
-                    "retrieved": _ranking(first)}
+                    "retrieved": _ranking(first), "cost": {**cost, **rerank_cost}}
                 if second is not None:
                     record["reranked"] = _ranking(second)
                 records.append(record)
@@ -353,7 +382,8 @@ def evaluate(dataset, index, method="hybrid", embedding_model=None, top_k=50, re
                for chunk in chunks]
     summary = {"dataset": dataset, "index": index, "setup": results_directory.name,
                "mean_chunk_chars": sum(lengths) / len(lengths) if lengths else 0,
-               "skipped": skipped, **summarize(records)}
+               "skipped": skipped, **summarize(records),
+               "cost": summarize_cost(records, workers if rerank_model else None)}
     _write_json(results_directory / "summary.json", summary)
     return summary
 

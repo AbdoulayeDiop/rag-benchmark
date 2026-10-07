@@ -387,7 +387,8 @@ recorded in its `config.json`.
 ```
 indexes/<dataset>/<name>/config.json              what the run is
 indexes/<dataset>/<name>/chunks.jsonl             one chunk per line, in document order
-indexes/<dataset>/<name>/documents.jsonl          one line per finished document
+indexes/<dataset>/<name>/documents.jsonl          one line per finished document, with its cost
+indexes/<dataset>/<name>/cost.json                what the run cost, added up
 indexes/<dataset>/<name>/chroma/                  Chroma database, one collection per embedding model
 indexes/<dataset>/<name>/bm25/                    persisted BM25Retriever
 ```
@@ -427,6 +428,16 @@ An index is read back with `load_vector_store(run, model)` and
   repeats no LLM call of a finished one, which matters for the runs in the cost
   table above. `--max-documents` can be raised later: the run is extended, not
   redone.
+- **Costs are recorded with the work.** Each line of `documents.jsonl` holds
+  the document's `chunking` and `augmentation` cost: seconds, LLM input and
+  output tokens, embedding tokens (the semantic chunkers'), and
+  `rate_limit_seconds`, the minutes waited out after a refusal. `cost.json`
+  adds them up and keeps a running total per embedding model, updated after
+  each batch, with the `workers` of the last run. Tokens are what the endpoint
+  reports, counted by a hook on the HTTP client (`llm.usage`). For the LLM
+  methods they, not the seconds, are the cost to compare: the seconds are
+  mostly the endpoint's 128,000 tokens a minute. Documents finished before
+  costs were recorded have none.
 - **The embedding model is its own axis.** Running again with another
   `--embedding-model` adds a collection beside the first and leaves the chunks
   alone.
@@ -484,17 +495,12 @@ It calls no model beyond retrieval itself and gives the same result every time:
 | `hit@k` | a chunk among the first k overlaps an evidence span |
 | `mrr@10` | 1 / rank of the first such chunk (0 beyond 10) |
 | `ndcg@k` | binary relevance; the ideal ranking puts first every chunk of the index that overlaps evidence |
-| `precision@k` | share of the characters of the first k chunks that are evidence |
-| `recall@k` | share of the evidence characters the first k chunks cover |
-| `f1@k` | harmonic mean of precision@k and recall@k |
+| `evidence_recall@k` | share of the evidence characters (their union) the first k chunks cover |
 | `doc_hit@k` | a chunk among the first k comes from an evidence document |
 
-Precision and recall are counted in characters. Overlapping evidence spans and
-overlapping chunks are counted once. Chroma's chunking evaluation (Smith and
-Troynikov, 2024) counts the same in tokens. Precision keeps the comparison fair:
-hit, MRR, nDCG and recall favour large chunks, and precision pays for the text
-they bring along. With short answer spans (SQuAD), precision is small for any
-chunk size, so read it across methods, not on its own. Each metric is computed before (`retrieved`) and after
+`evidence_recall` is counted in characters, overlapping evidence spans and
+overlapping chunks once. All the metrics favour large chunks, so read them
+against the chunk length `compare.py` prints beside them. Each metric is computed before (`retrieved`) and after
 (`reranked`) reranking, at k = 1, 3, 5, 10, and over two groups of questions
 kept apart:
 - `evidence`: questions with spans in the run's rendering. All metrics apply.
@@ -506,55 +512,200 @@ over `--max-documents` is scored on its own documents' questions.
 
 Evidence differs by dataset:
 - **SQuAD:** several spans are alternative annotators' answers.
-- **Qasper:** spans merge every annotator's evidence, so `recall` undercounts.
+- **Qasper:** spans merge every annotator's evidence, so `evidence_recall` undercounts.
 - **ConditionalQA:** spans are all needed together.
-- **TriviaQA:** the evidence is a whole document, so there `hit` = `doc_hit`, and precision and recall mean little.
+- **TriviaQA:** the evidence is a whole document, so there `hit` = `doc_hit`, and `evidence_recall` means little.
 - **GutenQA:** 12% of spans are the source dataset's gold chunk, not the answer itself.
 
 ```powershell
 .venv\Scripts\python.exe evaluate.py squad txt-sentence-max_tokens=256-overlap=0 --embedding-model bge-m3 --rerank-model bge-reranker-v2-m3 --rerank-max-tokens 8192 --rerank-tokenizer BAAI/bge-m3
-.venv\Scripts\python.exe compare.py                   # one Markdown table per dataset
+.venv\Scripts\python.exe compare.py                   # per dataset, each method's best parameters
+.venv\Scripts\python.exe compare.py --all             # every parameter combination
 ```
 
 Results go to `results/<dataset>/<index>/<set-up>/`:
 - `config.json`
-- `items.jsonl`: rankings per question, resumable
-- `summary.json`
+- `items.jsonl`: rankings per question, resumable, and the question's `cost`:
+  `retrieval_seconds` (with its share of the batched query embedding),
+  `embedding_tokens`, and with a reranker `rerank_seconds` and `rerank_tokens`
+- `summary.json`: the metrics, and under `cost` the mean cost of a question,
+  the median seconds, and the reranking `workers`. Reranking seconds depend on
+  the concurrency and on the shared endpoint's load, so compare them within
+  one sitting
+
+`compare.py --cost` and `compare_chunking.py --cost` add the cost columns:
+`index s/doc` (chunking, augmentation, and embedding the document's chunks
+with the set-up's model), `LLM tok/doc`, `embed tok/doc` and `query s`
+(retrieval, plus reranking where the ranking shown is reranked).
 
 `--max-items` takes a sample in a fixed order (by a hash of the question id),
 so a larger sample contains a smaller one. The models default to
 `EMBEDDING_MODEL` and `RERANK_MODEL`. `--no-rerank` and
 `--retrieval dense|sparse|hybrid` give the other set-ups.
 
-Later, the following RAG metrics implemented in the [RAGAS library](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/).
-Context precision and recall need no generation and could check the span
-metrics where evidence is loose; faithfulness and answer relevancy need the
-generation step. The judge would be gpt-oss-120b.
-- [Context Precision](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/context_precision/#:~:text=Examples-,Context%20Precision,-The%20ContextPrecision%20metric)
-- [Context Recall](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/context_recall/)
+#### RAGAS context precision and recall
+
+`evaluate_ragas.py` judges a set-up `evaluate.py` has scored with two of the
+[RAGAS library](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/)'s
+metrics, which read the retrieved text rather than its offsets, so they check
+the span metrics where evidence is loose or another chunk says the same thing:
+
+| Metric | Meaning |
+|---|---|
+| [`context_precision@k`](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/context_precision/) | each of the first k chunks judged useful or not for reaching the reference answer (one call per chunk); the average precision of the verdicts |
+| [`context_recall@k`](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/context_recall/) | the reference answer split into statements, each judged attributable to the first k chunks or not (one call); the share attributed |
+
+```powershell
+.venv\Scripts\python.exe evaluate_ragas.py squad txt-fixed_token-max_tokens=256-overlap=0.25 dense-bge-m3-top_k=50 --judge-model gpt-oss-120b --requests-per-minute 10
+.venv\Scripts\python.exe compare_chunking.py --judge gpt-oss-120b      # adds both as columns
+```
+
+- **Library, not rewritten:** `ContextPrecision` (with reference) and
+  `ContextRecall` from `ragas.metrics.collections`, so the figures are RAGAS's
+  own. The precision without reference judges against a generated answer,
+  which there is none of yet. Only questions with evidence spans and a
+  reference answer are judged.
+- **What the judge reads:** each chunk as `build_text_for_llm` gives it
+  (`chunking/base.py`): its augmentations, each headed by its metadata key,
+  then `original_text` (tags stripped for HTML). `text_to_embed` joins the
+  augmentations bare, which an encoder can take but a judge could mistake for
+  the document's words; and a chunk summary is shown above the text rather
+  than in its place.
+- **Cost:** k + 1 calls a question. The endpoint allows gpt-oss-120b 10
+  requests a minute, and `--requests-per-minute` spaces the calls to that; a
+  refused call waits a minute and is sent again. Measured at k = 5: 4 SQuAD
+  questions in 3 min 26 s, about 50 s a question, so the default sample of
+  200 (`--max-items`, the first of `evaluate.py`'s sample order) takes close
+  to 3 hours a set-up. RAGAS is for comparing a few set-ups, not a grid.
+- **Lenient judge.** "What does the original manuscript show?" (SQuAD, on
+  Luther's hymn; reference "multiple revisions") got precision and recall of
+  1.0 from both gpt-oss-120b and mistral-small-3-2-24b-instruct-2506 for five
+  chunks of other articles, the first on the manuscript of *Go Set a
+  Watchman*, none mentioning a revision; the span metrics scored it 0. SQuAD's
+  questions take their passage for granted, and ConditionalQA's answers are
+  often a bare "yes", one statement to attribute. Read the two kinds of
+  metric together.
+- **Output and resuming:** `results/<dataset>/<index>/<set-up>/ragas-<judge>-k=<k>/`
+  holds `config.json`, `items.jsonl` (per question; resumable) and
+  `summary.json`. A question the judge's answer cannot be parsed for is
+  recorded with its error and counted in `failed`, not averaged.
+- **In an experiment file:** a top-level `ragas` object (`judge_model`, and
+  optionally `k`, `max_items`, `requests_per_minute`) judges every evaluation
+  the file makes.
+- **Dependency pin:** ragas 0.4.3 imports
+  `langchain_community.chat_models.vertexai`, which langchain-community 0.4
+  removed, so `requirements.txt` pins it below 0.4.
+
+Faithfulness and answer relevancy need the generation step and come with it.
 - [Faithfulness](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/faithfulness)
 - [Answer Relevancy](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/answer_relevance/)
 
-## Comparison of chunking methods
-We evaluate each chunking method on the different datasets with the following fixed pipeline:
-- No chunk augmentation
-- Embedding model : BGE-M3
-- Retrieval strategy : Hybrid
-- No reranking
-- Metrics : the evidence-span retrieval metrics of `evaluate.py` (see Evaluation); generation (gpt-oss-120b) and the RAGAS metrics come later
+## Comparison of methods, one stage at a time
+The methods of each stage -- chunking, augmentation, embedding, retrieval,
+reranking -- are compared with each other, one stage at a time. While one
+stage's methods vary, every other stage stays fixed at the baseline pipeline:
 
-markdown and html based chunking methods are evaluated on only markdown and html datasets respectively, while other methods are evaluated on txt datasets.
+| Stage | Baseline |
+|---|---|
+| Chunking | `fixed_token`, `max_tokens` 256, 512, 1,024 and `overlap` 0, 0.25 swept |
+| Chunk augmentation | none |
+| Embedding | bge-m3 |
+| Retrieval | dense, `top_k` 50 |
+| Reranking | none |
 
-Each method is one `ingest.py` index and one `evaluate.py` set-up. A
+Metrics are the evidence-span retrieval metrics of `evaluate.py` (see
+Evaluation), on the same 2,000-question sample per dataset (`max_items`).
+Generation (gpt-oss-120b) and the RAGAS metrics come later.
+
+Only the chunking method is fixed, not its parameters. The best size and
+overlap differ by dataset, and they may differ by alternative too: an
+augmentation that adds a document's title or context may suit smaller chunks
+than bare text does. So every comparison sweeps the six `fixed_token`
+combinations under each alternative, and `compare.py` reports each
+alternative at its best combination (on `evidence_recall@5` by default;
+`--all` shows them all). Alternatives are then compared each at its best,
+not at one size chosen for the baseline. The baseline alone, on dense
+retrieval, scores at best:
+
+| Dataset | `max_tokens` | `overlap` | `evidence_recall@5` | Mean chunk chars |
+|---|---:|---:|---:|---:|
+| SQuAD | 256 | 0.25 | 0.859 | 1,199 |
+| ConditionalQA | 1,024 | 0.25 | 0.877 | 4,003 |
+
+The margins are small: the runner-up is 0.015 behind on SQuAD (0.844, at
+1,024 tokens with no overlap) and 0.009 on ConditionalQA (0.868, at 1,024
+tokens with no overlap).
+
+| Stage compared | Experiment file | Alternatives | Index builds | Evaluations |
+|---|---|---|---:|---:|
+| Chunking | `chunking_eval.json` | `fixed_token`, `sentence` (256/512/1,024 tokens, overlap 0/0.25), `markdown`, `html` (256/512/1,024) | 120 | 120 |
+| Chunking, semantic | `semantic_chunking_eval.json` | `semantic`, `clustered` | 10 | 10 |
+| Chunking, LLM-based | `lumberchunker_eval.json` | `lumberchunker`, by mistral-small-3-2-24b-instruct-2506 | 2 | 2 |
+| Chunk augmentation | `augmentation_eval_squad_conditionalqa.json` | none, title, summary, context, keywords, questions, chunk summary, each alone, by mistral-small-3-2-24b-instruct-2506 | 84 | 84 |
+| Embedding | `embedding_eval_squad_conditionalqa.json` | bge-m3, qwen3-vl-embedding-8b | 24 | 24 |
+| Retrieval | `retrieval_eval_squad_conditionalqa.json` | dense, sparse, hybrid | 12 | 36 |
+| Reranking | `reranking_eval_squad_conditionalqa.json` | none, bge-reranker-v2-m3 over the 50 retrieved, keeping 10 | 12 | 24 |
+
+The chunking methods are split over three files by what they cost. The
+library splitters run on every built dataset but LiteraryQA, whose questions
+have no evidence spans to score. The semantic methods embed every sentence,
+so they run on the datasets under 5M tokens (cl100k): ConditionalQA (1.05M),
+SQuAD (0.71M), Qasper (2.12M), TechQA (2.22M) and Natural Questions (2.60M),
+leaving out TriviaQA (6.39M), PoQuAD (7.06M) and GutenQA (15.66M).
+LumberChunker calls the LLM for every boundary, under the endpoint's 128,000
+input tokens a minute, so it runs on SQuAD and ConditionalQA only. The
+semantic methods and LumberChunker have no size parameter to sweep, and no
+upper bound on a chunk, so those files cut over-long chunks to bge-m3's
+8,192 tokens.
+
+The other stages' files cover SQuAD and ConditionalQA. On those two, the
+baseline's twelve indexes (six combinations, two datasets) have the same names
+in every file, so they are built and scored once and shared; the counts above
+include them.
+
+- **Chunking:** `markdown` and `html` run only on datasets with that
+  rendering (`markdown`: ConditionalQA, Natural Questions, PoQuAD, Qasper,
+  TechQA, TriviaQA; `html`: ConditionalQA, Natural Questions), and the other
+  methods on the plain text. The
+  first chunking results were scored with hybrid retrieval. They stay under
+  `results/` as the `hybrid-bge-m3-top_k=50` set-up, and `compare.py` lists
+  them beside the dense ones.
+- **Augmentation** is the slow comparison. It is limited by the endpoint's
+  128,000 LLM input tokens a minute, and the sweep multiplies it: each
+  method runs at all six combinations, and the per-chunk methods cost most at
+  256 tokens (see the cost table under Chunk augmentation methods).
+- **Embedding:** the endpoint serves two embedding models. qwen3-vl-embedding-8b
+  returns 4,096 dimensions, unit length, and takes 32,768 tokens, so no
+  chunk here needs cutting. A second model adds a collection to the same
+  index, so it re-embeds but does not re-chunk. Its queries are embedded as
+  bge-m3's are, without the instruction prefix Qwen recommends for queries,
+  so its scores may be slightly low.
+- **Reranking:** bge-reranker-v2-m3 is the only reranker the endpoint serves,
+  so the comparison is reranking against none.
+
+Each run is one `ingest.py` index and one `evaluate.py` set-up. A
 comparison is written as a JSON file under `experiments/`, in the shape of
 `experiments/schema.json`. `experiments.py` builds and scores every run it
 describes, then prints the table:
 
 ```powershell
-.venv\Scripts\python.exe experiments.py experiments/chunking_eval_squad_conditionalqa.json --dry-run   # list the runs
-.venv\Scripts\python.exe experiments.py experiments/chunking_eval_squad_conditionalqa.json             # run; re-run to resume
-.venv\Scripts\python.exe compare.py squad                                                               # every result for a dataset
+.venv\Scripts\python.exe experiments.py experiments/chunking_eval.json --dry-run   # list the runs
+.venv\Scripts\python.exe experiments.py experiments/chunking_eval.json             # run; re-run to resume
+.venv\Scripts\python.exe compare.py squad                                          # every result for a dataset
+.venv\Scripts\python.exe compare_chunking.py                                       # the chunking methods, baseline pipeline only
 ```
+
+`compare_chunking.py` reads only the results scored with the baseline pipeline
+(no augmentation, bge-m3, dense retrieval of 50, no reranking), so the
+chunking method is the only difference between two rows. Per dataset it
+lists each method at its best parameters on `--metric` (`evidence_recall@5`
+by default), best first, with the chunk count and mean chunk length beside
+the metrics; `--all` lists every combination. An overview then sets the
+methods against the datasets, with each method's mean difference to
+`fixed_token` over the datasets it ran on. `fixed_token` runs on every
+dataset, so that difference compares methods run on different datasets
+(the semantic methods on five, LumberChunker on two) where a mean score
+would not.
 
 The file has one key per stage of the pipeline: `chunking`,
 `chunk_augmentation`, `chunk_embedding`, `retrieval` and `reranking`. Each

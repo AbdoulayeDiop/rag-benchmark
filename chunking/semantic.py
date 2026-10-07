@@ -28,17 +28,22 @@ the endpoint is not always reachable directly.
 
 import os
 
-import httpx
 import numpy as np
+
+from dotenv import load_dotenv
 from llama_index.core.node_parser import SemanticSplitterNodeParser
 from llama_index.core.utils import get_tokenizer
 from llama_index.embeddings.openai_like import OpenAILikeEmbedding
+from openai import DefaultHttpxClient
 from scipy.sparse import diags
 from sklearn.cluster import AgglomerativeClustering
+
+from llm import count_usage
 
 from .base import split_spans, to_chunks
 from .segment import sentence_pieces, sentence_spans
 
+load_dotenv()
 
 def openai_embedding(model, api_key=None, api_base=None,
                      proxy=None, batch_size=64, timeout=60.0, **kwargs):
@@ -57,10 +62,13 @@ def openai_embedding(model, api_key=None, api_base=None,
 
     `api_key` and `api_base` default to OPENAI_API_KEY and OPENAI_API_BASE.
     `proxy` is an http(s) proxy URL; it is applied by handing the client its own
-    httpx transport, which is the only way through to the underlying SDK.
+    httpx client, which is the only way through to the underlying SDK.
     Anything else -- `dimensions`, `max_retries` -- passes straight through.
     """
-    client = httpx.Client(proxy=proxy, timeout=timeout) if proxy else None
+    # Its own HTTP client, so that its calls are counted with every other's
+    # (see `llm.count_usage`).
+    options = {"proxy": proxy, "timeout": timeout} if proxy else {}
+    client = DefaultHttpxClient(event_hooks={"response": [count_usage]}, **options)
     return OpenAILikeEmbedding(
         model_name=model,
         api_key=api_key or os.environ.get("OPENAI_API_KEY"),

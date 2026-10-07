@@ -7,7 +7,7 @@ places where no library will do: slicing fixed-size character windows, and readi
 outline without throwing the markup away.
 """
 
-from .base import (Chunk, build_text_to_embed, get_text_to_embed, resolve_overlap,
+from .base import (Chunk, build_text_for_llm, build_text_to_embed, get_text_to_embed, resolve_overlap,
                    split_spans, to_chunks, update_chunk_metadata, verify)
 from .fixed import fixed_char, fixed_token
 from .html import html

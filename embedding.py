@@ -31,13 +31,11 @@ text cut to 8,192 is accepted. A request of more than 64 texts is refused with
 413 too, and an empty input with 400.
 """
 
-import time
-
 import tiktoken
 from openai import APIStatusError, RateLimitError
 from tokenizers import Tokenizer
 
-from llm import get_client
+from llm import get_client, wait_for_rate_limit
 
 # Texts sent per request: the most the endpoint used here accepts. Many accept
 # more; pass `batch_size` to `ingest.embed_corpus` to send more at once.
@@ -87,7 +85,7 @@ def _request(texts, model, client, attempts):
         except RateLimitError:
             if attempt == attempts - 1:
                 raise
-            time.sleep(60)
+            wait_for_rate_limit()
         except APIStatusError as error:
             if error.status_code == 413:
                 raise ValueError(

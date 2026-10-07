@@ -5,7 +5,7 @@ A comparison is many runs that differ in one stage -- the chunking method, say
 record that can be read, re-run and extended, instead of a dozen command lines
 kept in step by hand:
 
-    .venv\\Scripts\\python.exe experiments.py experiments/chunking_eval_squad_conditionalqa.json
+    .venv\\Scripts\\python.exe experiments.py experiments/chunking_eval.json
 
 The file is JSON, one key per stage of the pipeline (see `experiments/schema.json`):
 
@@ -55,7 +55,12 @@ The stages:
                         Left out, no reranking.
 
 `max_documents` and `max_items` cap the documents indexed and the questions
-scored, for a quick run. Any entry, and the file, may carry a `description`,
+scored, for a quick run. `ragas` has every evaluation also judged by
+`evaluate_ragas.py` -- RAGAS context precision and recall -- with
+`judge_model`, and optionally `k` (5), `max_items` (200) and
+`requests_per_minute`, the judge's limit at the endpoint (10 for
+gpt-oss-120b). At about a minute a question under that limit, it is for a
+few set-ups, not a grid. Any entry, and the file, may carry a `description`,
 which stands in for a comment and is otherwise ignored.
 
 Nothing comes from the environment: a run is what its file says, so the file
@@ -74,10 +79,13 @@ import os
 import re
 import traceback
 
-from compare import collect, table
+from compare import best, collect, table
+from dotenv import load_dotenv
 from evaluate import evaluate
 from ingest import AUGMENTERS, CHUNKERS, RENDERINGS, ROOT, build_config, ingest, run_name
 from retrieval import METHODS
+
+load_dotenv()
 
 STAGES = ("chunking", "chunk_augmentation", "chunk_embedding", "retrieval", "reranking")
 
@@ -89,6 +97,7 @@ RERANKERS = ("cross_encoder",)
 AUGMENTATION_PARAMS = ("llm_model",)
 RETRIEVAL_PARAMS = ("top_k",)
 RERANKING_PARAMS = ("model", "top_k", "max_tokens", "tokenizer")
+RAGAS_PARAMS = ("judge_model", "k", "max_items", "requests_per_minute")
 
 
 def _check_keys(entry, allowed, where):
@@ -234,7 +243,12 @@ def load_experiments(path):
     """
     with open(path, encoding="utf-8") as file:
         spec = json.load(file)
-    _check_keys(spec, ("dataset", *STAGES, "max_documents", "max_items"), path)
+    _check_keys(spec, ("dataset", *STAGES, "max_documents", "max_items", "ragas"), path)
+    ragas = spec.get("ragas")
+    if ragas is not None:
+        _check_keys(ragas, RAGAS_PARAMS, f"{path}, ragas")
+        if not ragas.get("judge_model"):
+            raise ValueError(f"{path}, ragas: name the judge in judge_model")
     datasets = spec.get("dataset")
     datasets = [datasets] if isinstance(datasets, str) else datasets or []
     if not datasets:
@@ -309,7 +323,7 @@ def load_experiments(path):
             if "top_k" in rerank:
                 arguments["rerank_top_k"] = rerank["top_k"]
             evaluations.append({"name": setup_name(retrieval, embedding["model"], reranking),
-                                "arguments": arguments})
+                                "arguments": arguments, "ragas": ragas})
         builds.append({"dataset": dataset, "index": index, "embedding_model": embedding["model"],
                        "ingest": ingest_arguments, "evaluations": evaluations})
     if not builds:
@@ -328,6 +342,14 @@ def run(builds, keep_going=False, skip_evaluation=False):
             for evaluation in [] if skip_evaluation else build["evaluations"]:
                 evaluate(build["dataset"], directory.name, name=evaluation["name"],
                          **evaluation["arguments"])
+                if evaluation["ragas"]:
+                    # Imported here: ragas is slow to load, and most files do not use it.
+                    from evaluate_ragas import evaluate_ragas
+                    options = evaluation["ragas"]
+                    evaluate_ragas(build["dataset"], directory.name, evaluation["name"],
+                                   options["judge_model"], options.get("k", 5),
+                                   options.get("max_items", 200),
+                                   requests_per_minute=options.get("requests_per_minute"))
         except Exception as error:
             if not keep_going:
                 raise
@@ -351,19 +373,22 @@ def main():
     for number, build in enumerate(builds, start=1):
         print(f"{number:>3}. {build['dataset']} / {build['index']} ({build['embedding_model']})")
         for evaluation in build["evaluations"]:
-            print(f"       {evaluation['name']}")
+            judged = (f" + RAGAS by {evaluation['ragas']['judge_model']}"
+                      if evaluation["ragas"] else "")
+            print(f"       {evaluation['name']}{judged}")
     print(f"{len(builds)} index builds, "
           f"{sum(len(build['evaluations']) for build in builds)} evaluations")
     if arguments.dry_run:
         return
     failed = run(builds, arguments.keep_going, arguments.skip_evaluation)
 
-    # The table of this file's runs only; compare.py shows every result there is.
+    # Each method's best parameters among this file's runs; compare.py shows
+    # every result there is, and --all every combination.
     indexes = {(build["dataset"], build["index"]) for build in builds}
     for dataset, summaries in collect().items():
         mine = [summary for summary in summaries if (dataset, summary["index"]) in indexes]
         if mine and not arguments.skip_evaluation:
-            print(f"\n### {dataset}\n\n{table(mine)}")
+            print(f"\n### {dataset}\n\n{table(best(mine))}")
     if failed:
         print(f"\n{len(failed)} of {len(builds)} index builds failed:")
         for build, error in failed:

@@ -47,6 +47,15 @@ axis: running again with another `--embedding-model` adds a second collection
 beside the first and leaves the chunks, and the LLM calls behind them, alone.
 `config.json` holds what decides a chunk's content; a run directory is refused
 if it was started with a different one.
+
+What a run costs is recorded with what it produced, so that resuming adds to
+it rather than starting the count again: each line of `documents.jsonl` holds
+the document's `chunking` and `augmentation` -- seconds, and the tokens and
+rate-limit waits `llm.usage` counted -- and `cost.json` adds them up, beside a
+running total per embedding model that is brought up to date after every
+batch. The `workers` the last run had are recorded there too, since they
+change the seconds but not the tokens. A document finished before costs were
+recorded has none, so the totals say how many documents they cover.
 """
 
 import argparse
@@ -54,6 +63,8 @@ import inspect
 import json
 import os
 import re
+import time
+from collections import Counter
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -71,7 +82,7 @@ from chunking import (Chunk, build_text_to_embed, clustered, detect_language, fi
                       semantic, sentence, tiled, update_chunk_metadata, verify)
 from chunking.lumberchunker import lumberchunker
 from embedding import BATCH_SIZE, embed_batch, load_tokenizer
-from llm import get_client
+from llm import get_client, usage, usage_since
 
 ROOT = Path(__file__).parent
 
@@ -194,6 +205,20 @@ def run_name(config, params=None):
     name = f"{config['rendering']}-{config['chunking']['method']}"
     name += "".join(f"-{key}={value}" for key, value in sorted((params or {}).items()))
     return name + "".join(f"+{augmentation}" for augmentation in config["augmentations"])
+
+
+def _add_up(records):
+    """The sum of `records`, dicts of numbers, name by name."""
+    totals = Counter()
+    for record in records:
+        totals.update(record)
+    return {name: round(value, 3) if isinstance(value, float) else value
+            for name, value in sorted(totals.items())}
+
+
+def _cost_since(before, started):
+    """The seconds since `started` and what `llm.usage` counted since `before`."""
+    return {"seconds": round(time.perf_counter() - started, 3), **usage_since(before)}
 
 
 def _read_jsonl(path):
@@ -370,14 +395,37 @@ def chunk_corpus(run_directory, config, max_documents=None, workers=4, client=No
     for doc_id, document in tqdm(list(documents), desc="chunking", unit="doc"):
         if doc_id in finished:
             continue
+        before, started = usage(), time.perf_counter()
         chunks = verify(document, method(document, doc_id=doc_id, **arguments))
         if config["rendering"] == "html":
             chunks = [_as_html(chunk) for chunk in chunks]
-        for name in config["augmentations"]:
-            chunks = AUGMENTERS[name](chunks, document, config["llm_model"], client, workers)
+        cost = {"chunking": _cost_since(before, started)}
+        if config["augmentations"]:
+            before, started = usage(), time.perf_counter()
+            for name in config["augmentations"]:
+                chunks = AUGMENTERS[name](chunks, document, config["llm_model"], client, workers)
+            cost["augmentation"] = _cost_since(before, started)
         _append_jsonl(run_directory / "chunks.jsonl", [asdict(chunk) for chunk in chunks])
         _append_jsonl(run_directory / "documents.jsonl",
-                      [{"doc_id": doc_id, "characters": len(document), "chunks": len(chunks)}])
+                      [{"doc_id": doc_id, "characters": len(document), "chunks": len(chunks),
+                        **cost}])
+
+
+def record_cost(run_directory, workers):
+    """Add up the chunking and augmentation costs of a run's documents in `cost.json`.
+
+    Recomputed from `documents.jsonl` each time, over the documents that
+    recorded a cost; the embedding totals already in the file are kept.
+    """
+    path = Path(run_directory) / "cost.json"
+    cost = _read_json(path) if path.exists() else {}
+    documents = _read_jsonl(Path(run_directory) / "documents.jsonl")
+    for stage in ("chunking", "augmentation"):
+        recorded = [document[stage] for document in documents if stage in document]
+        if recorded:
+            cost[stage] = {"documents": len(recorded), **_add_up(recorded)}
+    cost["workers"] = workers
+    _write_json(path, cost)
 
 
 def _as_html(chunk):
@@ -406,6 +454,9 @@ def embed_corpus(run_directory, model, client=None, batch_size=BATCH_SIZE, token
     `max_tokens` nothing is cut, and a text over the limit stops the run. The
     node keeps its whole text either way. Returns the ids of the nodes whose
     text was cut, which carry `truncated: True` in their metadata.
+
+    Each batch's seconds -- the request and the write to Chroma -- and tokens
+    are added to `model`'s running total in `cost.json` once it is stored.
     """
     run_directory = Path(run_directory)
     nodes = to_nodes(load_chunks(run_directory))
@@ -424,14 +475,21 @@ def embed_corpus(run_directory, model, client=None, batch_size=BATCH_SIZE, token
         client = client or get_client()
         if max_tokens is not None:
             tokenizer = load_tokenizer(tokenizer)
+    cost_path = run_directory / "cost.json"
     for start in tqdm(range(done, len(nodes), batch_size), desc="embedding", unit="batch"):
         batch = nodes[start:start + batch_size]
+        before, started = usage(), time.perf_counter()
         vectors, cut = embed_batch([node.text for node in batch], model, client, tokenizer,
                                    max_tokens)
         for position, (node, vector) in enumerate(zip(batch, vectors)):
             node.embedding = vector
             node.metadata["truncated"] = position in cut
         store.add(batch)
+        cost = _read_json(cost_path) if cost_path.exists() else {}
+        totals = cost.setdefault("embedding", {}).get(model, {})
+        cost["embedding"][model] = _add_up([totals, {"chunks": len(batch),
+                                                     **_cost_since(before, started)}])
+        _write_json(cost_path, cost)
     return collection.get(where={"truncated": True}, include=[])["ids"]
 
 
@@ -515,6 +573,7 @@ def ingest(dataset, chunking="sentence", params=None, rendering=None, augmentati
     _write_json(config_path, config)
 
     chunk_corpus(run_directory, config, max_documents, workers)
+    record_cost(run_directory, workers)
     documents = _read_jsonl(run_directory / "documents.jsonl")
     print(f"{run_directory}: {len(documents)} documents, "
           f"{sum(document['chunks'] for document in documents)} chunks")

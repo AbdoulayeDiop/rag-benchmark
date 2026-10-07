@@ -66,5 +66,20 @@ def fixed_token(document, max_tokens=1024, overlap=200, doc_id=""):
     if not 0 <= overlap < max_tokens:
         raise ValueError(f"overlap must be in [0, max_tokens), got {overlap} with "
                          f"max_tokens {max_tokens}")
-    parser = TokenTextSplitter(chunk_size=max_tokens, chunk_overlap=overlap)
-    return to_chunks(document, split_spans(document, parser), doc_id)
+    # By default the splitter strips each window, and LlamaIndex then locates it
+    # with str.find from just past the previous window's start. A window stripped
+    # down to a few characters matches further on than it belongs: PoQuAD's
+    # "Ciąg Fibonacciego", whose formulas are digits between long whitespace
+    # runs, yields windows of a lone "2", and every offset after the first
+    # misplaced one is lost. Kept whitespace makes each window unique enough to
+    # be found where it is; trimming afterwards gives the stripped spans (the
+    # same spans on the other 941 PoQuAD documents). As in `fixed_char`, a window
+    # that trims down to text the previous chunk already ends on adds nothing.
+    parser = TokenTextSplitter(chunk_size=max_tokens, chunk_overlap=overlap,
+                               keep_whitespaces=True)
+    spans = []
+    for start, end in split_spans(document, parser):
+        span = trim(document, start, end)
+        if span and (not spans or span[1] > spans[-1][1]):
+            spans.append(span)
+    return to_chunks(document, spans, doc_id)
