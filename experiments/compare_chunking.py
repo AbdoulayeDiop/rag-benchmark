@@ -7,9 +7,9 @@ dense retrieval of 50 chunks, no reranking -- so that the chunking method is
 the only thing that differs between two rows. Results of other set-ups, such
 as the first chunking runs scored with hybrid retrieval, are left out.
 
-    .venv\\Scripts\\python.exe compare_chunking.py                 # every dataset
-    .venv\\Scripts\\python.exe compare_chunking.py squad qasper    # some
-    .venv\\Scripts\\python.exe compare_chunking.py --all           # every parameter combination
+    .venv\\Scripts\\python.exe -m experiments.compare_chunking                 # every dataset
+    .venv\\Scripts\\python.exe -m experiments.compare_chunking squad qasper    # some
+    .venv\\Scripts\\python.exe -m experiments.compare_chunking --all           # every parameter combination
 
 It prints two things:
 
@@ -29,7 +29,7 @@ dataset are comparable only if they were scored on the same questions: a
 dataset whose rows differ in `docs` or `items` is flagged under its table.
 
 `--judge MODEL` adds RAGAS's context precision and recall at `--k`, where
-`evaluate_ragas.py` has judged a set-up with that model; a set-up it has not
+`evaluate.py` has judged a set-up with that model; a set-up it has not
 shows "–". They are means over its sample (200 questions by default, the
 `judged` column), not over `items`, and can be picked as `--metric` too.
 
@@ -37,17 +37,16 @@ shows "–". They are means over its sample (200 questions by default, the
 """
 
 import argparse
-import json
 import sys
 from statistics import mean
 
-from compare import (COST_COLUMNS, ROOT, collect, cost, describe_method, describe_params,
-                     format_cost)
+from experiments.compare import (COST_COLUMNS, collect, cost, describe_method, describe_params,
+                                 format_cost)
 
-# The pipeline every stage but chunking is fixed at. A summary's config must
-# match it on each key to be read.
-BASELINE = {"retrieval": "dense", "embedding_model": "bge-m3", "top_k": 50,
-            "rerank_model": None}
+# The pipeline every stage but chunking is fixed at. A summary must match it
+# on each key to be read.
+BASELINE = {"retrieval": {"method": "dense", "top_k": 50}, "reranking": None}
+BASELINE_EMBEDDING = "bge-m3"
 
 # The method every other is measured against in the overview.
 REFERENCE = "txt, fixed_token"
@@ -58,30 +57,26 @@ COLUMNS = ("hit@5", "mrr@10", "ndcg@10", "evidence_recall@5", "evidence_recall@1
 
 def is_baseline(summary):
     """Whether a summary was scored with the baseline pipeline around its chunking."""
-    config = summary["config"]
-    return (all(config.get(key) == value for key, value in BASELINE.items())
-            and not config["index_config"]["augmentations"])
+    return (all(summary.get(key) == value for key, value in BASELINE.items())
+            and summary["embedding"]["model"] == BASELINE_EMBEDDING
+            and not summary["chunking"]["augmentations"])
 
 
 def metrics(summary):
-    """The retrieved ranking's metrics over the questions with evidence; empty if there are none.
+    """The ranking's metrics over the questions with evidence; empty if there are none.
 
     RAGAS's, when `attach_ragas` found them, are among them.
     """
-    spans = summary["metrics"].get("retrieved", {}).get("evidence", {})
-    return {**spans, **summary.get("ragas", {})} if spans else {}
+    spans = summary["metrics"].get("evidence", {})
+    return {**spans, **summary.get("judged_metrics", {})} if spans else {}
 
 
 def attach_ragas(summary, judge_model, k):
-    """Add to `summary` the RAGAS metrics `evaluate_ragas.py` wrote for it with `judge_model`."""
-    # Imported here: ragas is slow to load, and only this option needs it.
-    from evaluate_ragas import judge_directory
-    results_directory = ROOT / "results" / summary["dataset"] / summary["index"] / summary["setup"]
-    path = judge_directory(results_directory, judge_model, k) / "summary.json"
-    if path.exists():
-        judged = _read_json(path)
-        summary["ragas"] = {name: judged[name] for name in
-                            (f"context_precision@{k}", f"context_recall@{k}")}
+    """Bring forward the RAGAS metrics `evaluate.py` judged for `summary` with `judge_model` at `k`."""
+    judged = summary.get("ragas", {}).get(f"{judge_model}-k={k}")
+    if judged:
+        summary["judged_metrics"] = {name: judged[name] for name in
+                                     (f"context_precision@{k}", f"context_recall@{k}")}
         summary["judged"] = judged["items"] - judged["failed"]
 
 
@@ -89,16 +84,11 @@ def best(summaries, metric):
     """Each method's summary whose parameters scored highest on `metric`."""
     chosen = {}
     for summary in summaries:
-        method = describe_method(summary["config"]["index_config"])
+        method = describe_method(summary["chunking"])
         value = metrics(summary).get(metric, float("-inf"))
         if method not in chosen or value > chosen[method][0]:
             chosen[method] = (value, summary)
     return {method: summary for method, (_, summary) in chosen.items()}
-
-
-def _read_json(path):
-    with open(path, encoding="utf-8") as file:
-        return json.load(file)
 
 
 def _format(value):
@@ -118,16 +108,15 @@ def dataset_table(summaries, metric, columns, costs=False):
     lines = ["| " + " | ".join(header) + " |",
              "|" + "|".join(["---"] * 2 + ["---:"] * (len(header) - 2)) + "|"]
     ordered = sorted(summaries, key=lambda summary: (-metrics(summary).get(metric, float("-inf")),
-                                                     describe_method(summary["config"]["index_config"])))
+                                                     describe_method(summary["chunking"])))
     for summary in ordered:
-        config = summary["config"]
         values = metrics(summary)
-        row = [describe_method(config["index_config"]), describe_params(config["index_config"]),
-               str(config["documents"]), str(summary["items"]["evidence"]),
+        row = [describe_method(summary["chunking"]), describe_params(summary["chunking"]),
+               str(summary["documents"]), str(summary["items"]["evidence"]),
                *([str(summary.get("judged", "–"))] if judged else []),
-               f"{config['chunks']:,}", f"{summary['mean_chunk_chars']:,.0f}",
+               f"{summary['chunks']:,}", f"{summary['mean_chunk_chars']:,.0f}",
                *(_format(values.get(name)) for name in columns),
-               *(format_cost(name, cost(summary, "retrieved").get(name))
+               *(format_cost(name, cost(summary).get(name))
                  for name in shown_costs)]
         lines.append("| " + " | ".join(row) + " |")
     return "\n".join(lines)
@@ -168,7 +157,7 @@ def main():
     parser.add_argument("--columns", nargs="+", default=list(COLUMNS),
                         help="metrics to show per dataset, beside --metric")
     parser.add_argument("--judge", help="add RAGAS context precision and recall, as judged by "
-                                         "this model with evaluate_ragas.py")
+                                         "this model with experiments.evaluate")
     parser.add_argument("--k", type=int, default=5, help="the cut-off the RAGAS metrics were "
                                                          "judged at")
     parser.add_argument("--all", action="store_true",
@@ -197,13 +186,13 @@ def main():
         chosen[dataset] = best(summaries, arguments.metric)
         shown = summaries if arguments.all else list(chosen[dataset].values())
         print(f"### {dataset}\n\n{dataset_table(shown, arguments.metric, arguments.columns, arguments.cost)}\n")
-        if len({(summary["config"]["documents"], summary["items"]["evidence"])
+        if len({(summary["documents"], summary["items"]["evidence"])
                 for summary in shown}) > 1:
             print("Rows were scored on different documents or questions; compare only rows "
                   "with the same `docs` and `items`.\n")
     if not chosen:
         raise SystemExit("No result of the baseline pipeline yet: run an experiment file "
-                         "under experiments/ first.")
+                         "under experiments/configs/ first.")
     print(f"### All datasets: {arguments.metric}, each method at its best\n\n"
           f"{overview_table(chosen, arguments.metric)}")
 

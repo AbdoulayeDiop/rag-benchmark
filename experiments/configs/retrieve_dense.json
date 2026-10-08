@@ -1,0 +1,8 @@
+{
+  "description": "The README's baseline retrieval, dense with 50 chunks, on every index embedded with bge-m3 and not augmented, over 2,000 questions per dataset. Run: .venv\\Scripts\\python.exe -m experiments.retrieve experiments/configs/retrieve_dense.json",
+  "index": "*/*/*/none/bge-m3",
+  "retrieval": [
+    {"method": "dense", "params": {"top_k": 50}}
+  ],
+  "max_items": 2000
+}

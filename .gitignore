@@ -3,3 +3,6 @@ __pycache__/
 .cache/
 indexes/
 results/
+experiments/chunks/
+experiments/indexes/
+experiments/results/

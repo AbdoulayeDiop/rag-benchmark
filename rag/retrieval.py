@@ -1,6 +1,7 @@
 """Retrieval: the chunks of an index that answer a query, best first.
 
-Three methods over the two stores `ingest.py` writes for a run:
+Three methods over the two stores of `ingestion` (`open_vector_store`,
+`load_bm25`):
 
     dense     the query embedded by the run's embedding model, searched in its
               Chroma collection by cosine
@@ -27,13 +28,11 @@ since; it flattens the difference between the first few ranks so that a chunk
 both retrievers place well beats one only a single retriever places first.
 """
 
-from pathlib import Path
-
 from llama_index.core.vector_stores.types import VectorStoreQuery
 
-from embedding import BATCH_SIZE, embed_batch
-from ingest import load_bm25, load_chunks, load_vector_store, node_to_chunk
-from llm import get_client
+from .embedding import BATCH_SIZE, embed_batch
+from .ingestion import node_to_chunk
+from .llm import get_client
 
 METHODS = ("dense", "sparse", "hybrid")
 
@@ -52,42 +51,6 @@ def embed_queries(queries, model, client=None):
     for start in range(0, len(queries), BATCH_SIZE):
         vectors += embed_batch(queries[start:start + BATCH_SIZE], model, client)[0]
     return vectors
-
-
-def open_stores(run_directory, method="hybrid", embedding_model=None, top_k=50):
-    """Open what `method` searches in a run: `(vector store, BM25 retriever)`.
-
-    The one a method does not use is None. A collection that holds fewer
-    vectors than the run has chunks is refused: it was not finished, and the
-    chunks it lacks could never be found.
-    """
-    if method not in METHODS:
-        raise ValueError(f"unknown retrieval method {method!r}; choose from {METHODS}")
-    run_directory = Path(run_directory)
-    store = bm25 = None
-    if method in ("dense", "hybrid"):
-        if not embedding_model:
-            raise ValueError(f"{method} retrieval embeds the query: name the embedding model")
-        chroma = run_directory / "chroma"
-        store = load_vector_store(run_directory, embedding_model) if chroma.is_dir() else None
-        chunks = len(load_chunks(run_directory))
-        stored = store._collection.count() if store else 0
-        if stored != chunks:
-            raise ValueError(f"{run_directory} has {chunks} chunks but {stored} {embedding_model} "
-                             f"vectors: run ingest.py with --embedding-model {embedding_model}")
-    if method in ("sparse", "hybrid"):
-        if not (run_directory / "bm25").is_dir():
-            raise ValueError(f"{run_directory} has no BM25 index: run ingest.py again")
-        bm25 = load_bm25(run_directory, top_k)
-        # As `ingest.embed_corpus` checks for a collection: an index built
-        # before nodes carried the whole chunk cannot be turned back into one.
-        if bm25.corpus and "original_text" not in bm25.corpus[0]:
-            raise ValueError(f"the BM25 index of {run_directory} predates full-chunk node "
-                             f"metadata: run ingest.py again for this run to rebuild it")
-        # bm25s refuses a k larger than its corpus, which a run over a few
-        # documents can have.
-        bm25.similarity_top_k = min(top_k, len(bm25.corpus))
-    return store, bm25
 
 
 def dense(store, vector, top_k=50):
@@ -122,9 +85,10 @@ def retrieve(query, store, bm25, method="hybrid", top_k=50, embedding_model=None
              client=None):
     """Retrieve the best `top_k` chunks for `query` with `method`.
 
-    `store` and `bm25` come from `open_stores`. Dense and hybrid embed the
-    query with `embedding_model`, the model the index was embedded with,
-    through `client` (default `get_client()`). `vector` is the query's
+    `store` is a vector store (`ingestion.open_vector_store`) and `bm25` a
+    BM25Retriever (`ingestion.load_bm25`), whichever `method` searches.
+    Dense and hybrid embed the query with `embedding_model`, the model the
+    index was embedded with, through `client` (default `get_client()`). `vector` is the query's
     embedding already made: many queries are embedded far faster together
     (`embed_queries`, 64 a request) than one request each, so a caller with
     many passes them in and `embedding_model` is not needed. Hybrid takes

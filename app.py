@@ -8,14 +8,14 @@ import streamlit as st
 import tiktoken
 
 # Import chunking methods
-from chunking import (
+from rag.chunking import (
     fixed_char,
     html as html_chunker,
     markdown as markdown_chunker,
     sentence,
 )
-from chunking.lumberchunker import lumberchunker
-from chunking.semantic import clustered, openai_embedding, semantic, tiled
+from rag.chunking.lumberchunker import lumberchunker
+from rag.chunking.semantic import clustered, openai_embedding, semantic, tiled
 
 @st.cache_resource
 def get_tokenizer():
@@ -381,7 +381,7 @@ def run_chunker(doc_text, method_name, method_params):
         )
     
     elif method_name == "LumberChunker (LLM-based)":
-        from llm import get_client
+        from rag.llm import get_client
         client = get_client(
             api_key=method_params["api_key"],
             api_base=method_params["api_base"],

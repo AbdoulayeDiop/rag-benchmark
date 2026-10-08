@@ -27,9 +27,9 @@ to 8,192 by `fit_documents` is accepted, and one cut to 8,193 refused.
 import httpx
 from openai import RateLimitError
 
-from chunking import get_text_to_embed
-from embedding import truncate_to_tokens
-from llm import get_client, wait_for_rate_limit
+from .chunking import get_text_to_embed
+from .embedding import truncate_to_tokens
+from .llm import get_client, wait_for_rate_limit
 
 # Documents per request: the most the endpoint used here accepts.
 BATCH_SIZE = 64

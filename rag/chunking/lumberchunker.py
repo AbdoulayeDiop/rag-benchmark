@@ -1,7 +1,7 @@
 import json
 from typing import List
 
-from llm import call_llm
+from ..llm import call_llm
 
 from .base import Chunk, to_chunks, verify
 from .segment import paragraph_spans

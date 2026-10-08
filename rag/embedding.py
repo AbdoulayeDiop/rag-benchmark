@@ -35,7 +35,7 @@ import tiktoken
 from openai import APIStatusError, RateLimitError
 from tokenizers import Tokenizer
 
-from llm import get_client, wait_for_rate_limit
+from .llm import get_client, wait_for_rate_limit
 
 # Texts sent per request: the most the endpoint used here accepts. Many accept
 # more; pass `batch_size` to `ingest.embed_corpus` to send more at once.

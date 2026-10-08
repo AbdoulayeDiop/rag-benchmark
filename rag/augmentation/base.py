@@ -29,8 +29,8 @@ exactly what it covers.
 
 from concurrent.futures import ThreadPoolExecutor
 
-from chunking.base import SEPARATOR, update_chunk_metadata
-from llm import call_llm, get_client
+from ..chunking.base import SEPARATOR, update_chunk_metadata
+from ..llm import call_llm, get_client
 
 
 def augment_chunk(chunk, **augmentations):

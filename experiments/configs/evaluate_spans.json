@@ -1,0 +1,4 @@
+{
+  "description": "Span metrics of every retrieval and reranking run. Run: .venv\\Scripts\\python.exe -m experiments.evaluate experiments/configs/evaluate_spans.json",
+  "results": "all"
+}

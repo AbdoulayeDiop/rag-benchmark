@@ -1,0 +1,9 @@
+{
+  "description": "Span metrics, and RAGAS context precision and recall judged by openweight-large on the first 200 questions, of the baseline dense runs. At about a minute a question under the judge's limit, keep this to a few runs. Run: .venv\\Scripts\\python.exe -m experiments.evaluate experiments/configs/evaluate_ragas.json",
+  "results": "*/*/*/none/bge-m3/dense-top_k=50",
+  "ragas": {
+    "judge_model": "openweight-large",
+    "k": 5,
+    "max_items": 200
+  }
+}

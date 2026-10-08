@@ -38,7 +38,7 @@ from openai import DefaultHttpxClient
 from scipy.sparse import diags
 from sklearn.cluster import AgglomerativeClustering
 
-from llm import count_usage
+from ..llm import count_usage
 
 from .base import split_spans, to_chunks
 from .segment import sentence_pieces, sentence_spans
