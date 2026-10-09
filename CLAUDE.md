@@ -62,7 +62,7 @@ directory started with another configuration is refused.
 
 Loader flags vary per dataset: `--splits` (conditionalqa, literaryqa, poquad,
 qasper, squad), `--split` (triviaqa), `--max-documents` (naturalquestions, squad,
-techqa, triviaqa), `--delay` (literaryqa, poquad, which fetch from the web).
+techqa, triviaqa), `--delay` (literaryqa, poquad, squad, which fetch from the web).
 
 LLM and embedding calls read `OPENAI_API_KEY` and `OPENAI_API_BASE` and target an
 OpenAI-compatible endpoint, not OpenAI itself. No model name is hard-coded:

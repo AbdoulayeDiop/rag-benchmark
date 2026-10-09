@@ -127,7 +127,7 @@ before finishing.
 | ConditionalQA | Government policy, UK gov.uk | 652 | 5,977 | 2,623 | 10,284 spans | txt, md, html |
 | TechQA | Technical support, IBM technotes | 2,000 | 3,249 | 910 | 601 spans | txt, md |
 | MS MARCO | Web pages, Bing search results | — | — | — | — | **skipped**, see below |
-| SQuAD 1.1 | Open-domain, Wikipedia | 100 | 31,579 | 23,557 | 31,203 spans | txt |
+| SQuAD 1.1 | Open-domain, Wikipedia | 100 | 41,657 | 18,145 | 24,209 spans | txt |
 | Natural Questions | Open-domain, Wikipedia (search queries) | 300 | 22,263 | 315 | 640 spans | txt, md, html |
 
 Four of the nine built datasets are Wikipedia, so they differ mainly in question
@@ -236,13 +236,27 @@ Choices that are not recoverable from the loader output alone:
   both break any assumption of a single constant offset shift. 8 annotated ranges
   cover table regions whose cells the tokeniser strips and hold no body text.
 
-- **SQuAD 1.1** is distributed as ~700-character paragraphs, but every paragraph
-  carries the title of its source article and the paragraphs under one title are
-  consecutive sections of it. Joining them in order rebuilds the article — a
-  median of 44 paragraphs and 31,579 characters — with no refetching and nothing
-  invented, which is why SQuAD grouped cleanly where PoQuAD (one paragraph per
-  record) did not. Answer offsets are paragraph-relative and shift by the
-  paragraph's position, staying exact: all 31,203 spans verify.
+- **SQuAD 1.1** is distributed as ~700-character paragraphs. Joining the
+  paragraphs that share a title does not rebuild the article: SQuAD discarded
+  paragraphs under 500 characters, tables and figures (paper, section 3), and does
+  not store paragraphs in article order (Warsaw, Nikola Tesla). The loader instead
+  fetches each article **as it stood on 2016-06-01**, the month SQuAD was
+  released, builds the document from that revision's `<p>` paragraphs outside
+  tables (footnote markers removed, whitespace collapsed), and keeps a question
+  only if its paragraph appears there verbatim. Answer offsets are
+  paragraph-relative and shift by the paragraph's position, so no fuzzy matching
+  is involved and all 24,209 spans verify. 3,940 of 4,874 paragraphs (81%) are
+  found and 18,145 of 23,557 questions (77%) kept; documents have a median of 73
+  paragraphs and 41,657 characters. One date for every article is a
+  simplification: SQuAD's paragraphs come from several revisions, and nine
+  articles keep under half their paragraphs (Super Bowl 50, which needs a
+  post-February 2016 revision, keeps 172 of 810 questions). Fuzzy matching was
+  tried on Nikola Tesla and rejected: 93% of answers then map exactly, the rest
+  land on edited wording. Titles are resolved through the **move log** rather
+  than redirects: in 2023 "Private school" and "Independent school" swapped
+  histories, so the page SQuAD used now lives under "Independent school" and the
+  redirect leads to an unrelated article; eleven of the 100 articles have changed
+  title since 2016. Revisions are cached under `.cache/revisions-2016-06-01/`.
   **Version 1.1 is used rather than 2.0 on purpose.** 2.0's unanswerable questions
   were written to be unanswerable from the *single paragraph* shown, a label that
   grouping invalidates since the rest of the article may answer them; 27% had a
