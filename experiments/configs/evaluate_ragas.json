@@ -4,6 +4,6 @@
   "ragas": {
     "judge_model": "openweight-large",
     "k": 5,
-    "max_items": 200
+    "max_items": 100
   }
 }

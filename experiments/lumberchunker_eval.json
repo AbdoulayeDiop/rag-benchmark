@@ -1,0 +1,25 @@
+{
+  "description": "LumberChunker on SQuAD and ConditionalQA, segmented by mistral-small-3-2-24b-instruct-2506, the other stages at the README's baseline: no augmentation, bge-m3, dense retrieval, no reranking. It calls the LLM over a growing window of paragraphs for every boundary, so it is limited by the endpoint's 128,000 input tokens a minute and kept to the two smallest datasets. Run: .venv\\Scripts\\python.exe experiments.py experiments/lumberchunker_eval.json",
+  "dataset": ["squad", "conditionalqa"],
+  "max_items": 2000,
+  "chunking": [
+    {"method": "lumberchunker", "params": {"llm_model": "mistral-small-3-2-24b-instruct-2506"}}
+  ],
+  "chunk_augmentation": [
+    {"method": "none"}
+  ],
+  "chunk_embedding": [
+    {
+      "description": "Over-long chunks (LumberChunker has no upper bound) are cut to bge-m3's limit, counted with its own tokenizer.",
+      "model": "bge-m3",
+      "tokenizer": "BAAI/bge-m3",
+      "context_length": 8192
+    }
+  ],
+  "retrieval": [
+    {"method": "dense", "params": {"top_k": 50}}
+  ],
+  "reranking": [
+    {"method": "none"}
+  ]
+}

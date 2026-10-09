@@ -1,0 +1,21 @@
+{
+  "description": "Reranking compared on SQuAD and ConditionalQA: none against bge-reranker-v2-m3 over all 50 retrieved chunks, keeping 10, on the same indexes. It is the only reranker the endpoint serves. The other stages are at the README's baseline: fixed_token chunking, its max_tokens and overlap swept so that compare.py reports each alternative at its best, no augmentation, bge-m3, dense retrieval, no reranking. Run: .venv\\Scripts\\python.exe experiments.py experiments/reranking_eval_squad_conditionalqa.json",
+  "dataset": ["squad", "conditionalqa"],
+  "max_items": 2000,
+  "chunking": [
+    {"method": "fixed_token", "params": {"max_tokens": [256, 512, 1024], "overlap": [0, 0.25]}}
+  ],
+  "chunk_augmentation": [
+    {"method": "none"}
+  ],
+  "chunk_embedding": [
+    {"model": "bge-m3", "tokenizer": "BAAI/bge-m3", "context_length": 8192}
+  ],
+  "retrieval": [
+    {"method": "dense", "params": {"top_k": 50}}
+  ],
+  "reranking": [
+    {"method": "none"},
+    {"method": "cross_encoder", "params": {"model": "bge-reranker-v2-m3", "top_k": 10, "max_tokens": 8192, "tokenizer": "BAAI/bge-m3"}}
+  ]
+}

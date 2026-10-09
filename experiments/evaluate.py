@@ -50,7 +50,7 @@ gives it: each augmentation headed by its metadata key, then `original_text`
 what was generated about it. Verdicts are appended a batch of questions at a
 time, so a stopped run continues after the questions already judged; a
 question whose judging failed is kept with its error and left out of the
-means. The judge and `k` name the file, and the summary holds one entry per
+means, and judged again the next time the run is evaluated. The judge and `k` name the file, and the summary holds one entry per
 pair under `ragas`. At about a minute a question under the judge's limit, it
 is meant for a few runs, not a grid.
 """
@@ -154,7 +154,17 @@ def judge_run(directory, judge_model, k=5, max_items=200, requests_per_minute=No
                      key=lambda record: sample_order(record["id"]))[:max_items]
     path = directory / "evaluation" / f"{name(f'ragas-{judge_model}', {'k': k})}.jsonl"
     path.parent.mkdir(exist_ok=True)
-    done = {record["id"] for record in read_jsonl(path)}
+    # A question whose judging failed is judged again: its verdict is dropped
+    # from the file, through a copy so that a stopped run loses none of the others.
+    verdicts = read_jsonl(path)
+    kept = [record for record in verdicts if "error" not in record]
+    if len(kept) < len(verdicts):
+        print(f"{len(verdicts) - len(kept)} failed questions in {path} are judged again")
+        partial = path.with_suffix(".tmp")
+        partial.unlink(missing_ok=True)
+        append_jsonl(partial, kept)
+        partial.replace(path)
+    done = {record["id"] for record in kept}
     todo = [record for record in records if record["id"] not in done]
     print(f"{len(records)} questions to judge ({len(done)} done) by {judge_model}, top {k}")
 

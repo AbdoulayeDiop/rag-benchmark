@@ -1,0 +1,26 @@
+{
+  "description": "Semantic chunking methods compared on the datasets under 5M cl100k tokens (ConditionalQA 1.05M, Natural Questions 2.60M, Qasper 2.12M, SQuAD 0.71M, TechQA 2.22M), the other stages at the README's baseline: no augmentation, bge-m3, dense retrieval, no reranking. They embed every sentence, so PoQuAD (7.06M), TriviaQA (6.39M) and GutenQA (15.66M) are left out. Run: .venv\\Scripts\\python.exe experiments.py experiments/semantic_chunking_eval.json",
+  "dataset": ["conditionalqa", "naturalquestions", "qasper", "squad", "techqa"],
+  "max_items": 2000,
+  "chunking": [
+    {"method": "semantic", "params": {"embedding_model": "bge-m3"}},
+    {"method": "clustered", "params": {"embedding_model": "bge-m3"}}
+  ],
+  "chunk_augmentation": [
+    {"method": "none"}
+  ],
+  "chunk_embedding": [
+    {
+      "description": "Over-long chunks (semantic chunking has no upper bound) are cut to bge-m3's limit, counted with its own tokenizer.",
+      "model": "bge-m3",
+      "tokenizer": "BAAI/bge-m3",
+      "context_length": 8192
+    }
+  ],
+  "retrieval": [
+    {"method": "dense", "params": {"top_k": 50}}
+  ],
+  "reranking": [
+    {"method": "none"}
+  ]
+}

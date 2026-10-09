@@ -1,0 +1,18 @@
+{
+  "dataset": ["conditionalqa", "naturalquestions", "qasper", "squad", "techqa"],
+  "chunking": [
+    {"method": "semantic", "params": {"embedding_model": "bge-m3"}},
+    {"method": "clustered", "params": {"embedding_model": "bge-m3"}}
+  ],
+  "chunk_augmentation": [
+    {"method": "none"}
+  ],
+  "chunk_embedding": [
+    {
+      "description": "A safeguard: every method here caps chunks at 1,024 tokens, far below bge-m3's limit of 8,192, counted with its own tokenizer.",
+      "model": "bge-m3",
+      "tokenizer": "BAAI/bge-m3",
+      "context_length": 8192
+    }
+  ]
+}

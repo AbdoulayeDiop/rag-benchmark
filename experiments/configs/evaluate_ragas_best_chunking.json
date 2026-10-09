@@ -1,0 +1,46 @@
+{
+  "description": "RAGAS context precision and recall, judged by openweight-large on the first 200 questions, of each chunking method at its best parameters per dataset on evidence_recall@5, over the baseline pipeline (no augmentation, bge-m3, dense retrieval of 50, no reranking). Chosen from the span results of 2026-10-08; 9 of the 24 runs were already judged and are only re-read. Run: .venv\\Scripts\\python.exe -m experiments.evaluate experiments/configs/evaluate_ragas_best_chunking.json",
+  "results": [
+    "conditionalqa/html/html-max_tokens=1024/none/bge-m3/dense-top_k=50",
+    "conditionalqa/md/markdown-max_tokens=512/none/bge-m3/dense-top_k=50",
+    "conditionalqa/txt/fixed_token-max_tokens=1024-overlap=0.25/none/bge-m3/dense-top_k=50",
+    "conditionalqa/txt/sentence-max_tokens=1024-overlap=0.25/none/bge-m3/dense-top_k=50",
+    "gutenqa/txt/fixed_token-max_tokens=256-overlap=0.25/none/bge-m3/dense-top_k=50",
+    "gutenqa/txt/sentence-max_tokens=512-overlap=0.25/none/bge-m3/dense-top_k=50",
+    "naturalquestions/html/html-max_tokens=1024/none/bge-m3/dense-top_k=50",
+    "naturalquestions/md/markdown-max_tokens=1024/none/bge-m3/dense-top_k=50",
+    "naturalquestions/txt/fixed_token-max_tokens=1024-overlap=0/none/bge-m3/dense-top_k=50",
+    "naturalquestions/txt/sentence-max_tokens=1024-overlap=0/none/bge-m3/dense-top_k=50",
+    "poquad/md/markdown-max_tokens=512/none/bge-m3/dense-top_k=50",
+    "poquad/txt/fixed_token-max_tokens=256-overlap=0.25/none/bge-m3/dense-top_k=50",
+    "poquad/txt/sentence-max_tokens=512-overlap=0.25/none/bge-m3/dense-top_k=50",
+    "qasper/md/markdown-max_tokens=1024/none/bge-m3/dense-top_k=50",
+    "qasper/txt/fixed_token-max_tokens=1024-overlap=0.25/none/bge-m3/dense-top_k=50",
+    "qasper/txt/sentence-max_tokens=1024-overlap=0.25/none/bge-m3/dense-top_k=50",
+    "squad/txt/fixed_token-max_tokens=256-overlap=0.25/none/bge-m3/dense-top_k=50",
+    "squad/txt/sentence-max_tokens=256-overlap=0.25/none/bge-m3/dense-top_k=50",
+    "techqa/md/markdown-max_tokens=1024/none/bge-m3/dense-top_k=50",
+    "techqa/txt/fixed_token-max_tokens=1024-overlap=0/none/bge-m3/dense-top_k=50",
+    "techqa/txt/sentence-max_tokens=1024-overlap=0/none/bge-m3/dense-top_k=50",
+    "triviaqa/md/markdown-max_tokens=1024/none/bge-m3/dense-top_k=50",
+    "triviaqa/txt/fixed_token-max_tokens=1024-overlap=0/none/bge-m3/dense-top_k=50",
+    "triviaqa/txt/sentence-max_tokens=1024-overlap=0/none/bge-m3/dense-top_k=50",
+
+    "conditionalqa/txt/semantic-embedding_model=bge-m3/none/bge-m3/dense-top_k=50",
+    "naturalquestions/txt/semantic-embedding_model=bge-m3/none/bge-m3/dense-top_k=50",
+    "qasper/txt/semantic-embedding_model=bge-m3/none/bge-m3/dense-top_k=50",
+    "squad/txt/semantic-embedding_model=bge-m3/none/bge-m3/dense-top_k=50",
+    "techqa/txt/semantic-embedding_model=bge-m3/none/bge-m3/dense-top_k=50",
+
+    "conditionalqa/txt/clustered-embedding_model=bge-m3/none/bge-m3/dense-top_k=50",
+    "naturalquestions/txt/clustered-embedding_model=bge-m3/none/bge-m3/dense-top_k=50",
+    "qasper/txt/clustered-embedding_model=bge-m3/none/bge-m3/dense-top_k=50",
+    "squad/txt/clustered-embedding_model=bge-m3/none/bge-m3/dense-top_k=50",
+    "techqa/txt/clustered-embedding_model=bge-m3/none/bge-m3/dense-top_k=50"
+  ],
+  "ragas": {
+    "judge_model": "openweight-large",
+    "k": 5,
+    "max_items": 100
+  }
+}
