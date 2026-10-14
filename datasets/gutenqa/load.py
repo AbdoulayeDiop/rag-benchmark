@@ -13,6 +13,14 @@ Outputs:
   data/documents/<book name>.txt   100 reconstructed books
   data/items.jsonl                 3,000 {question, answer, evidences} records
 
+QUESTIONS NAME THEIR BOOK: each question is written as `In "<title>", <question>`,
+the title read from the book name ("A_Christmas_Carol_-_Charles_Dickens"), and
+the published wording is kept in `metadata.original_question`. The questions
+were generated from one chunk each, and some read as if the chunk were all
+there is ("What caused the protagonist to feel a great pinch and
+apprehensions?"). A user asking a RAG system over a library would name the book,
+so the title is added, as for Qasper.
+
 Evidence spans are character offsets into the reconstructed document, so that a
 retrieved chunk can be scored by overlap regardless of how it was cut.
 
@@ -127,6 +135,23 @@ def build_documents(chunks):
     return documents
 
 
+def with_title(question, title):
+    """The question prefixed with the title of the book it is asked of.
+
+    The first letter is lowered unless the first word is an acronym ("BBC").
+    """
+    question = " ".join(question.split())
+    first = question.split(" ", 1)[0]
+    if not (len(first) > 1 and first[1].isupper()):
+        question = question[0].lower() + question[1:]
+    return f'In "{title}", {question}'
+
+
+def book_title(book_name):
+    """The title in a GutenQA book name, "<title>_-_<author>" with underscores."""
+    return book_name.split("_-_", 1)[0].replace("_", " ")
+
+
 def build_items(questions, documents):
     """Turn each question into a {question, answer, evidences} record."""
     items = []
@@ -151,7 +176,7 @@ def build_items(questions, documents):
 
         items.append({
             "id": f"gutenqa-{position:04d}",
-            "question": row.question,
+            "question": with_title(row.question, book_title(doc_id)),
             "answer": row.answer,
             "evidences": [{
                 "doc_id": doc_id,
@@ -164,6 +189,7 @@ def build_items(questions, documents):
                 "book_id": book_id,
                 "source_chunk_id": chunk_id,
                 "chunk_must_contain": excerpt if isinstance(excerpt, str) else None,
+                "original_question": row.question,
             },
         })
     return items, counts
@@ -181,7 +207,10 @@ def main():
     print(f"  {len(chunks):,} source chunks, {len(questions):,} questions")
 
     documents = build_documents(chunks)
+    # A previous build may have written documents this one no longer does.
     DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    for stale in DOCUMENTS_DIR.iterdir():
+        stale.unlink()
     written = 0
     for doc_id, text, _ in documents.values():
         path = DOCUMENTS_DIR / f"{safe_filename(doc_id)}.txt"

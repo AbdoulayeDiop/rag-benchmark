@@ -1,7 +1,6 @@
 {
   "description": "The chunking comparison's indexes: every built dataset but LiteraryQA, which has no evidence spans, each chunking method over its own rendering, no augmentation, bge-m3. Markdown and HTML methods run only on datasets with that rendering. Run: .venv\\Scripts\\python.exe -m experiments.ingest experiments/configs/ingest_chunking.json",
-  "dataset": ["conditionalqa", "gutenqa", "naturalquestions", "poquad", "qasper",
-              "squad", "techqa", "triviaqa"],
+  "dataset": ["conditionalqa", "gutenqa", "naturalquestions", "qasper", "squad", "techqa", "triviaqa"],
   "chunking": [
     {"method": "fixed_token", "params": {"max_tokens": [256, 512, 1024], "overlap": [0, 0.25]}},
     {"method": "sentence", "params": {"max_tokens": [256, 512, 1024], "overlap": [0, 0.25]}},

@@ -20,6 +20,10 @@ for, so the HTML rendering is rebuilt from the same blocks instead.
 
 Split: validation. NQ's test set is held out for the leaderboard. Only the first
 shard is used -- it holds 1,089 documents, already more than the document budget.
+Only answerable questions are kept -- those where an annotator marked a long or
+short answer or a yes/no -- and the budget counts only their pages: the
+experiments score retrieval, and an unanswerable question has nothing to
+retrieve.
 
 Outputs:
   data/documents/<page>.txt      one Wikipedia page per document
@@ -248,30 +252,29 @@ def main():
     frame = pd.read_parquet(hf_hub_download(REPO_ID, SHARD, repo_type="dataset"))
     print(f"validation shard: {len(frame):,} questions")
 
+    # A previous build may have written pages this one no longer keeps.
     for directory in (DOCUMENTS_DIR, MARKDOWN_DIR, HTML_DIR):
         directory.mkdir(parents=True, exist_ok=True)
+        for stale in directory.iterdir():
+            stale.unlink()
 
-    documents = {}
+    # Every page rendered, and those written: the pages of answerable questions.
+    rendered, documents = {}, set()
     items = []
-    counts = {"long": 0, "short": 0, "unlocated": 0, "no_html": 0, "no_markdown": 0}
+    counts = {"long": 0, "short": 0, "unlocated": 0, "no_html": 0, "no_markdown": 0,
+              "unanswerable": 0}
     lengths = []
 
     for row in frame.itertuples(index=False):
         title = row.document["title"]
         doc_id = document_id(title)
-        if doc_id not in documents:
-            if args.max_documents and len(documents) >= args.max_documents:
-                continue
-            plain, markdown, html, spans, token_map = render(row.document["tokens"])
-            if not plain.strip():
-                continue
-            (DOCUMENTS_DIR / f"{doc_id}.txt").write_text(plain, encoding="utf-8", newline="\n")
-            (MARKDOWN_DIR / f"{doc_id}.md").write_text(markdown, encoding="utf-8", newline="\n")
-            (HTML_DIR / f"{doc_id}.html").write_text(html, encoding="utf-8", newline="\n")
-            documents[doc_id] = (plain, markdown, html, spans, token_map)
-            lengths.append(len(plain))
-
-        plain, markdown, html, spans, token_map = documents[doc_id]
+        if doc_id not in documents and args.max_documents and len(documents) >= args.max_documents:
+            continue
+        if doc_id not in rendered:
+            rendered[doc_id] = render(row.document["tokens"])
+        plain, markdown, html, spans, token_map = rendered[doc_id]
+        if not plain.strip():
+            continue
         annotations = row.annotations
 
         evidences = []
@@ -330,7 +333,15 @@ def main():
         elif evidences:
             answer, answer_type = evidences[0]["text"], "long_answer"
         else:
-            answer, answer_type = "Unanswerable", "unanswerable"
+            counts["unanswerable"] += 1
+            continue
+
+        if doc_id not in documents:
+            (DOCUMENTS_DIR / f"{doc_id}.txt").write_text(plain, encoding="utf-8", newline="\n")
+            (MARKDOWN_DIR / f"{doc_id}.md").write_text(markdown, encoding="utf-8", newline="\n")
+            (HTML_DIR / f"{doc_id}.html").write_text(html, encoding="utf-8", newline="\n")
+            documents.add(doc_id)
+            lengths.append(len(plain))
 
         items.append({
             "id": f"naturalquestions-{row.id}",
@@ -361,9 +372,8 @@ def main():
         for item in items:
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-    unanswerable = sum(1 for i in items if i["metadata"]["answer_type"] == "unanswerable")
-    print(f"Wrote {len(items):,} items to {ITEMS_PATH}")
-    print(f"  {len(items) - unanswerable:,} answerable, {unanswerable:,} unanswerable "
+    print(f"Wrote {len(items):,} answerable items to {ITEMS_PATH}")
+    print(f"  {counts['unanswerable']:,} unanswerable questions on the pages read left out "
           f"(no annotator found a passage)")
     print(f"  evidence spans: {counts['long']:,} long answers, {counts['short']:,} short answers")
     if counts["unlocated"]:

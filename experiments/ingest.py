@@ -35,7 +35,8 @@ combination of a dataset and one alternative per stage is built:
     max_documents       the first that many documents of each dataset, by name
     language            a pysbd code, or "auto" (the default): detected once per
                         dataset from the opening of its first documents
-    workers             per-chunk LLM calls in flight at once (4)
+    workers             per-chunk LLM calls, and embedding requests, in flight
+                        at once (4)
 
 Two stages, two trees (see `common`):
 
@@ -72,8 +73,8 @@ it rather than starting the count again: each line of `documents.jsonl` holds
 the document's `chunking` and `augmentation` -- seconds, and the tokens and
 rate-limit waits `llm.usage` counted -- and the chunks' `cost.json` adds them
 up; the index's holds a running total brought up to date after every batch.
-The `workers` the last run had are recorded too, since they change the seconds
-but not the tokens. A document finished before costs were recorded has none,
+The `workers` the last run had are recorded too, in both, since they change
+the seconds but not the tokens. A document finished before costs were recorded has none,
 so the totals say how many documents they cover.
 
 Every combination is checked before the first starts -- unknown keys, methods
@@ -404,13 +405,14 @@ def build_chunks(run, language, max_documents=None, workers=4):
     return directory
 
 
-def build_index(chunks_directory, embedding):
+def build_index(chunks_directory, embedding, workers=4):
     """Build or continue the index of a chunks run for one embedding; return its directory.
 
     `embedding` is `{model, tokenizer, context_length}`: a chunk over
     `context_length` tokens, counted by `tokenizer` (tiktoken if None), is
     cut to fit before it is embedded, and without one a chunk over the
-    model's limit stops the run.
+    model's limit stops the run. `workers` embedding requests are in flight
+    at once.
     """
     model = embedding["model"]
     directory = INDEXES / relative(chunks_directory, CHUNKS) / name(model)
@@ -430,12 +432,14 @@ def build_index(chunks_directory, embedding):
         cost["embedding"] = _add_up([cost.get("embedding", {}),
                                      {"chunks": count,
                                       **_cost_since(state["before"], state["started"])}])
+        cost["workers"] = workers
         write_json(cost_path, cost)
         state.update(before=usage(), started=time.perf_counter())
 
     store = open_vector_store(directory / "chroma", model)
     truncated = embed_nodes(store, to_nodes(chunks), model, tokenizer=embedding["tokenizer"],
-                            max_tokens=embedding["context_length"], on_batch=record)
+                            max_tokens=embedding["context_length"], on_batch=record,
+                            workers=workers)
     if truncated:
         print(f"{len(truncated)} chunks were cut to fit {model}: {truncated}")
     return directory
@@ -460,7 +464,7 @@ def main():
         directory = build_chunks(entry, language, config.get("max_documents"),
                                  config.get("workers", 4))
         for embedding in entry["embeddings"]:
-            build_index(directory, embedding)
+            build_index(directory, embedding, config.get("workers", 4))
 
     run_each(plan(config, arguments.config),
              lambda entry: f"{relative(entry['directory'], CHUNKS)} ("

@@ -86,20 +86,24 @@ An item looks like this:
   "answer": "Perplexity; Response-Intent Prediction (RIP)",
   "evidences": [
     {
-      "doc_id": "1911.09920",
-      "text": "Experiments ::: Automatic Evaluation Metrics",
-      "start": 22928,
-      "end": 22972, "match": "exact",
-      "kind": "paragraph",
+      "doc_id": "1911.10742",
+      "text": "Experiments ::: Automatic Evaluation Metrics
+
+Perplexity Since ...",
+      "start": 22938,
+      "end": 25135, "match": "section",
+      "kind": "section",
       "markdown": {
-         "text": "### Automatic Evaluation Metrics", 
-         "start": 23180, 
-         "end": 23212
+         "text": "### Automatic Evaluation Metrics
+
+Perplexity Since ...",
+         "start": 22904,
+         "end": 25089
       }
     }
   ],
   "metadata": {
-      "doc_id": "1911.09920",
+      "doc_id": "1911.10742",
       "answer_type": "extractive",
       "...": "..."
    }
@@ -110,7 +114,7 @@ An item looks like this:
 scored by span overlap however it was cut. Because headings render differently in
 each version, an evidence carries its own offsets **and its own text** per
 rendering — never assume one span works for all of them. `match` records how the
-span was found (`exact`, `folded`, `element`, `document`, …), so weak spans can be
+span was found (`exact`, `folded`, `element`, `section`, …), so weak spans can be
 filtered out. Every loader verifies `document[start:end] == text` for every span
 before finishing.
 
@@ -119,16 +123,16 @@ before finishing.
 | Dataset | Domain | Docs | Median chars | Items | Evidence | Renderings |
 |---|---|---:|---:|---:|---|---|
 | GutenQA | Literature, novels | 100 | 459,613 | 3,000 | 3,000 spans | txt |
-| LiteraryQA | Literature, novels | 138 | 351,107 | 3,785 | none | txt, md, html |
+| LiteraryQA | Literature, novels | 47 | 350,172 | 1,417 | none | txt, md, html |
 | NovelQA | Literature, novels | — | — | — | — | **skipped**, see below |
-| Qasper | Research papers | 416 | 23,187 | 1,451 | 3,726 spans | txt, md |
-| TriviaQA | Open-domain, Wikipedia (trivia) | 1,000 | 21,597 | 947 | document-level | txt, md |
-| PoQuAD | Open-domain, Wikipedia (**Polish**) | 942 | 12,477 | 2,805 | 2,336 spans | txt, md |
-| ConditionalQA | Government policy, UK gov.uk | 652 | 5,977 | 2,623 | 10,284 spans | txt, md, html |
-| TechQA | Technical support, IBM technotes | 2,000 | 3,249 | 910 | 601 spans | txt, md |
+| Qasper | Research papers | 276 | 22,905 | 910 | 1,882 spans | txt, md |
+| TriviaQA | Open-domain, Wikipedia (trivia) | 1,000 | 21,597 | 947 | document-level | txt |
+| PoQuAD | Open-domain, Wikipedia (**Polish**) | ≤ 947 | to rebuild | ≤ 4,667 | to rebuild | txt |
+| ConditionalQA | Government policy, UK gov.uk | 59 | 6,114 | 271 | 1,165 spans | txt, md, html |
+| TechQA | Technical support, IBM technotes | 141 | 2,639 | 151 | 151 spans | txt |
 | MS MARCO | Web pages, Bing search results | — | — | — | — | **skipped**, see below |
-| SQuAD 1.1 | Open-domain, Wikipedia | 100 | 41,657 | 18,145 | 24,209 spans | txt |
-| Natural Questions | Open-domain, Wikipedia (search queries) | 300 | 22,263 | 315 | 640 spans | txt, md, html |
+| SQuAD 1.1 | Open-domain, Wikipedia | 48 | 43,748 | 8,371 | 8,371 paragraphs | txt |
+| Natural Questions | Open-domain, Wikipedia (search queries) | 300 | 26,935 | 314 | 989 spans | txt, md, html |
 
 Four of the nine built datasets are Wikipedia, so they differ mainly in question
 style — trivia, translated search queries, crowdworker questions and Polish —
@@ -145,14 +149,26 @@ Choices that are not recoverable from the loader output alone:
   loader concatenates each book's chunks back in order, so our own chunking is
   measured instead of LumberChunker's. 349 of 3,000 evidence excerpts are LLM
   paraphrases that appear nowhere in the book; those fall back to the whole gold
-  chunk and are marked `match: "chunk"`.
+  chunk and are marked `match: "chunk"`. **Each question names its book**, as
+  `In "<title>", <question>`, as for Qasper, with the original wording in
+  `metadata.original_question`: the questions were generated from one chunk
+  each, and some read as if that chunk were all there is ("What caused the
+  protagonist to feel a great pinch and apprehensions?"), and a user asking over
+  a library would name the book.
 - **LiteraryQA** cannot be loaded with `load_dataset`: the Hub repository is a
   script (so it needs `trust_remote_code`) and its published copy declares an
   empty `_LOCAL_FILES`, which raises `KeyError` before downloading anything. The
   loader instead drives the authors' own cleaning code, vendored under
-  `datasets/literaryqa/vendor/` at a pinned commit. Answers are abstractive and
+  `datasets/literaryqa/vendor/` at a pinned commit, with one local fix: upstream
+  builds a mirror path from the first four digits of the book id, which is right
+  only for five-digit ids, so every book under 10000 404s on the mirrors and is
+  fetched only while gutenberg.org itself is up. Answers are abstractive and
   written from plot summaries, so **`evidences` is empty for every item** — usable
-  for answer quality, not for retrieval precision.
+  for answer quality, not for retrieval precision. **Each question names its
+  book**, as `In "<title>", <question>`, with the title less a disambiguation
+  suffix ("Doctors (novel)") and the original wording in
+  `metadata.original_question`. Most questions name a character but not the book,
+  and a user asking over a library would name it.
 - **NovelQA is skipped: its ground truth is held out.** The dataset is gated on
   Hugging Face (auto-approved) and 60 of its 89 novels include text — the other 28
   are copyright-protected and ship questions without a book. But all 1,526
@@ -167,27 +183,44 @@ Choices that are not recoverable from the loader output alone:
   only needs the corpus, which is already accessible.
 - **Qasper** resolves a conflict in the literature: full papers average 24,471
   characters, so the figure of ~1,014 characters reported elsewhere describes
-  abstracts, not papers. 459 evidence annotations point at a figure or table
-  caption, which the source stores positionless, so captions are appended under a
-  trailing "Figures and Tables" heading to keep them locatable.
+  abstracts, not papers. 180 evidence annotations are a section heading; an
+  annotator marking a heading points at the section, so those spans cover the
+  whole section, subsections included (`match: "section"`). Figure and table
+  captions are left out of the documents: the source stores them with no
+  position in the text. The 459 evidence annotations pointing at a caption are
+  dropped, and the 42 questions that had no other evidence with them. These
+  figures are from the test split; the loader now builds dev, the smallest.
+  **Each question names its paper**, as `In "<title>", <question>`, with the
+  original wording in `metadata.original_question`, as GutenQA's and
+  LiteraryQA's name their book. The annotators wrote their questions for one
+  paper they had the title and abstract of, so most never name it ("What
+  baseline is used?"); asked of a corpus, as a RAG system is, a user would. The
+  title is what the annotators knew; a template adds nothing else, where an LLM
+  rewrite would vary between runs and could leak the answer.
 - **TriviaQA** is capped at 1,000 articles; the full validation split is 10,033
   pages and 234M characters. Its annotation is **document-level** — a question is
-  linked to whole articles, never to a passage — so `evidences` spans the entire
-  document with `text: null`. `metadata.answer_occurrences` adds where the answer
+  linked to whole articles, never to a passage — so, as for LiteraryQA,
+  `evidences` is empty, the gold articles are in `metadata.doc_ids`, and only
+  `doc_hit` is computed. `metadata.answer_occurrences` adds where the answer
   string literally appears (99.7% of items), which is distant supervision inferred
   by the loader, not annotation, and is deliberately kept out of `evidences`.
-  Wikipedia section headings are detected heuristically (short trailing-space
-  lines) and the original nesting is unrecoverable, so all render at one level.
+  Articles are plain text only: section headings survive only as short
+  trailing-space lines, so a Markdown rendering would rest on a guess.
 - **PoQuAD** ships one ~930-character paragraph per record, which gives chunking
   nothing to do. The loader refetches each record's full Wikipedia article and
-  relocates the answer spans into it, turning ~930-character passages into
-  documents with a median of 12,477 characters. The paragraphs date from 2022, so
-  379 of 959 no longer appear verbatim; those 1,837 questions are dropped and the
-  loader reports the loss. Every one of the 2,336 surviving answer spans was
-  located. The 372 articles whose passage drifted are kept as distractors.
-  Wikipedia refuses requests without a descriptive `User-Agent`, rejects batching
-  for whole-article extracts, and answers 429 with a `Retry-After` header that
-  must be honoured, hence roughly 4.5s per article.
+  relocates the passage and its answer spans into it. Fetching the articles as
+  they are today lost 379 of 959 dev passages (1,837 questions) to later edits,
+  so each article is now fetched **as it stood on 2022-09-01**, the last data
+  update of the PoQuAD repository, resolved through the move log as for SQuAD,
+  and built from that revision's `<p>` paragraphs. A passage is located with
+  whitespace collapsed, so one spanning two paragraphs is found too, and answer
+  offsets shift by the passage's position. **The evidence is the passage**, one
+  span per question, as for SQuAD; the answer spans inside it are kept in
+  `metadata.answer_spans` (on the 212 articles cached so far, a median of 20
+  characters against the passage's 787). Plain text only: section headings
+  are not `<p>` elements. Revisions are cached under
+  `.cache/revisions-2022-09-01/`; dev is 947 articles at up to three requests
+  each.
 - **TechQA** is loaded from NVIDIA's `TechQA-RAG-Eval` repackaging, not the link
   in the list above. `rojagtap/tech-qa` keeps only the gold document per question,
   leaving no corpus to retrieve from; the original `PrimeQA/TechQA` archive is
@@ -195,11 +228,15 @@ Choices that are not recoverable from the loader output alone:
   fraction of a percent. NVIDIA's version dropped the original offset fields, but
   TechQA answers *are* the annotator-marked excerpt (median 255 characters), so
   locating that text recovers the human annotation rather than inventing one —
-  unlike TriviaQA, where a short entity string can occur incidentally. The corpus
-  is capped at 2,000 technotes: all 496 gold documents plus distractors. Two
-  questions flagged answerable ship an empty answer and are recorded as
-  unanswerable. Technotes quote shell snippets, so some body lines begin with `#`
-  and read as headings to a Markdown parser although the loader did not mark them.
+  unlike TriviaQA, where a short entity string can occur incidentally. NVIDIA
+  ships the original train (600) and dev (310) questions together; the loader
+  keeps dev, told apart by the `DEV_` id prefix, and its answerable questions
+  whose answer it located: 151 of 310 (150 unanswerable, 2 flagged answerable
+  with an empty answer, 7 whose answer is in none of their technotes). The
+  corpus is their 141 gold technotes, with no distractors. Technotes are
+  kept as plain text only: a Markdown rendering would have to guess headings from
+  upper-case lines, and the shell snippets technotes quote start lines with `#`,
+  which a Markdown parser reads as headings.
 - **ConditionalQA** is the cleanest source here: all 10,284 evidence entries match
   a page element verbatim. A question is meaningless without its scenario
   ("How long will it be before I hear back from the court?"), so **`question` holds
@@ -255,8 +292,8 @@ Choices that are not recoverable from the loader output alone:
   land on edited wording. Titles are resolved through the **move log** rather
   than redirects: in 2023 "Private school" and "Independent school" swapped
   histories, so the page SQuAD used now lives under "Independent school" and the
-  redirect leads to an unrelated article; eleven of the 100 articles have changed
-  title since 2016. Revisions are cached under `.cache/revisions-2016-06-01/`.
+  redirect leads to an unrelated article; five of the 48 validation articles have
+  changed title since 2016. Revisions are cached under `.cache/revisions-2016-06-01/`.
   **Version 1.1 is used rather than 2.0 on purpose.** 2.0's unanswerable questions
   were written to be unanswerable from the *single paragraph* shown, a label that
   grouping invalidates since the rest of the article may answer them; 27% had a
@@ -264,21 +301,30 @@ Choices that are not recoverable from the loader output alone:
   gold answer the label can only ever be contradicted, never confirmed. 1.1 has no
   such questions, so nothing is discarded. For abstention use TechQA, Qasper or
   Natural Questions, where the judgement covers the whole document.
-  The corpus is capped at 100 articles, all 48 validation ones plus 52 from train,
-  so retrieval is not trivial. Validation questions carry up to six annotator
-  answers, giving a tolerance band on span boundaries rather than one arbitrary
-  span. `metadata.context_span` marks the paragraph the question was written
-  against — the gold passage a retriever should return — and every answer was
-  checked to fall inside it. Only plain text is written: SQuAD keeps no section
+  The corpus is validation's 48 articles, the smallest split: 1,721 of 2,067
+  paragraphs (83%) are found and 8,371 of 10,570 questions (79%) kept, with a
+  median of 80 paragraphs and 43,748 characters per document. **The evidence is
+  the paragraph the question was written against**, one span per question — the
+  gold passage a retriever should return, at the granularity of Natural
+  Questions' long answer. The annotators' answers (up to six, 14,435 distinct
+  spans) are kept in `metadata.answer_spans`, each checked to fall inside the
+  paragraph. They are not the evidence: at a median of 16 characters against the
+  paragraph's 701, they made `evidence_recall` nearly the same as `hit`, credited a
+  chunk holding the answer words without the sentence around them, and, pooled,
+  required every annotator's span where any one is enough. Only plain text is written: SQuAD keeps no section
   headings, so there is no structure to mark.
 
 #### Splits
 
-Loaders default to the smallest representative split, because corpus size is the
-binding constraint on local indexing and retrieval. Where a dataset's test split
-is held out (TriviaQA answers are `<unk>`, PoQuAD and ConditionalQA test ship no
-answers), the loader uses validation or dev instead and says so. Use `--splits`
-to build more.
+Loaders default to the smallest split with answers, because corpus size is the
+binding constraint on local indexing and retrieval: dev for ConditionalQA,
+PoQuAD, Qasper and TechQA, validation for LiteraryQA, Natural Questions, SQuAD
+and TriviaQA. Where a test split is held out (TriviaQA answers are `<unk>`,
+PoQuAD and ConditionalQA test ship no answers) it is never used. Only the
+documents the kept questions use are written, even where the corpus is shared
+between splits (ConditionalQA, TechQA). Only **answerable** questions are kept:
+the experiments score retrieval, and an unanswerable question has nothing to
+retrieve. Use `--splits` to build more.
 
 ### Chunking methods
 
@@ -343,8 +389,8 @@ whole corpus takes:
 
 | Dataset | 256-token chunks | 1,024-token chunks |
 |---|---:|---:|
+| TechQA | 1.4 h | 0.4 h |
 | ConditionalQA | 1.8 h | 0.5 h |
-| TechQA | 2.4 h | 0.6 h |
 | SQuAD | 3.1 h | 0.8 h |
 | Qasper | 8.3 h | 2.1 h |
 | Natural Questions | 9.5 h | 2.4 h |
@@ -553,17 +599,22 @@ against the chunk length `experiments.compare` prints beside them. Each
 metric is computed at k = 1, 3, 5, 10, over two groups of questions kept
 apart:
 - `evidence`: questions with spans in the run's rendering. All metrics apply.
-- `no_evidence`: questions tied to a document but with no span. These are
-  unanswerable questions, and all of LiteraryQA. Only `doc_hit` applies.
+- `no_evidence`: questions tied to a document but with no span: all of
+  LiteraryQA and TriviaQA, whose evidence is at most a whole document. Only
+  `doc_hit` applies.
 
-Questions whose documents are not all in the index are left out, so an index
-over `max_documents` is scored on its own documents' questions.
+Unanswerable questions are not in the datasets: the loaders keep only
+answerable ones, and `load_items` leaves out any marked unanswerable that an
+older build still holds. Questions whose documents are not all in the index
+are left out, so an index over `max_documents` is scored on its own documents'
+questions.
 
 Evidence differs by dataset:
-- **SQuAD:** several spans are alternative annotators' answers.
+- **SQuAD:** one span, the question's paragraph; the answer spans inside it are in `metadata.answer_spans`.
+- **PoQuAD:** likewise, one span, the question's passage.
 - **Qasper:** spans merge every annotator's evidence, so `evidence_recall` undercounts.
 - **ConditionalQA:** spans are all needed together.
-- **TriviaQA:** the evidence is a whole document, so there `hit` = `doc_hit`, and `evidence_recall` means little.
+- **TriviaQA:** the evidence is a whole document, recorded as no span, so only `doc_hit` is computed. A whole-document span would make `evidence_recall` the share of the article the chunks cover.
 - **GutenQA:** 12% of spans are the source dataset's gold chunk, not the answer itself.
 
 ```powershell
@@ -606,8 +657,8 @@ the span metrics where evidence is loose or another chunk says the same thing:
 - **Library, not rewritten:** `ContextPrecision` (with reference) and
   `ContextRecall` from `ragas.metrics.collections`, so the figures are RAGAS's
   own. The precision without reference judges against a generated answer,
-  which there is none of yet. Only questions with evidence spans and a
-  reference answer are judged.
+  which there is none of yet. RAGAS needs a reference answer, not evidence,
+  so every question with one is judged, LiteraryQA's and TriviaQA's included.
 - **What the judge reads:** each chunk as `build_text_for_llm` gives it
   (`rag/chunking/base.py`): its augmentations, each headed by its metadata key,
   then `original_text` (tags stripped for HTML). `text_to_embed` joins the
@@ -658,7 +709,8 @@ stage's methods vary, every other stage stays fixed at the baseline pipeline:
 | Reranking | none |
 
 Metrics are the evidence-span retrieval metrics of `experiments.evaluate` (see
-Evaluation), on the same 2,000-question sample per dataset (`max_items`).
+Evaluation), on the first 300 questions of the same sample order per dataset
+(`max_items`; ConditionalQA has 271).
 Generation (gpt-oss-120b) and the RAGAS metrics come later.
 
 Only the chunking method is fixed, not its parameters. The best size and
@@ -673,12 +725,13 @@ retrieval, scores at best:
 
 | Dataset | `max_tokens` | `overlap` | `evidence_recall@5` | Mean chunk chars |
 |---|---:|---:|---:|---:|
-| SQuAD | 256 | 0.25 | 0.859 | 1,199 |
-| ConditionalQA | 1,024 | 0.25 | 0.877 | 4,003 |
+| SQuAD | 1,024 | 0 | 0.860 | 4,656 |
+| ConditionalQA | 1,024 | 0.25 | 0.982 | 4,006 |
 
-The margins are small: the runner-up is 0.015 behind on SQuAD (0.844, at
-1,024 tokens with no overlap) and 0.009 on ConditionalQA (0.868, at 1,024
-tokens with no overlap).
+The margins are small: the runner-up is 0.004 behind on SQuAD (0.857, at
+1,024 tokens with an overlap of 0.25) and 0.003 on ConditionalQA (0.979, at
+1,024 tokens with no overlap). On SQuAD, 256 tokens with no overlap is lowest
+(0.817): with the paragraph as evidence, a small chunk covers only part of it.
 
 | Stage compared | Experiment file | Alternatives | Index builds | Evaluations |
 |---|---|---|---:|---:|
@@ -694,7 +747,7 @@ The chunking methods are split over three files by what they cost. The
 library splitters run on every built dataset but LiteraryQA, whose questions
 have no evidence spans to score. The semantic methods embed every sentence,
 so they run on the datasets under 5M tokens (cl100k): ConditionalQA (1.05M),
-SQuAD (0.71M), Qasper (2.12M), TechQA (2.22M) and Natural Questions (2.60M),
+SQuAD (0.71M), Qasper (2.02M), TechQA (0.70M) and Natural Questions (2.60M),
 leaving out TriviaQA (6.39M), PoQuAD (7.06M) and GutenQA (15.66M).
 LumberChunker calls the LLM for every boundary, under the endpoint's 128,000
 input tokens a minute, so it runs on SQuAD and ConditionalQA only. The
@@ -708,8 +761,8 @@ in every file, so they are built and scored once and shared; the counts above
 include them.
 
 - **Chunking:** `markdown` and `html` run only on datasets with that
-  rendering (`markdown`: ConditionalQA, Natural Questions, PoQuAD, Qasper,
-  TechQA, TriviaQA; `html`: ConditionalQA, Natural Questions), and the other
+  rendering (`markdown`: ConditionalQA, Natural Questions, PoQuAD, Qasper;
+  `html`: ConditionalQA, Natural Questions), and the other
   methods on the plain text.
 - **Augmentation** is the slow comparison. It is limited by the endpoint's
   128,000 LLM input tokens a minute, and the sweep multiplies it: each

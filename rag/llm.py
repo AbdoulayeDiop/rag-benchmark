@@ -30,7 +30,7 @@ from collections import Counter
 from dotenv import load_dotenv
 from openai import DefaultHttpxClient, OpenAI, RateLimitError
 
-load_dotenv()
+load_dotenv(override=True)
 # The routes whose answers report tokens, and the name each is counted under.
 ROUTES = {"/chat/completions": "llm", "/embeddings": "embedding", "/rerank": "rerank"}
 

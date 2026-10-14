@@ -48,7 +48,8 @@ current redirect lands on a different 12 kB article that matches no paragraph.
 Each title is therefore resolved through the move log -- every move away from it
 after REVISION_DATE, followed to the end -- and the revision is read from the
 page that held the title on that date, without following redirects. Eleven of
-the 100 default articles live under another title today; for the swap, and for
+the 100 articles of an earlier build (validation, then train) live under another
+title today; for the swap, and for
 "Financial crisis of 2007–08" (swapped again in 2025), the redirect would have
 led to the wrong page.
 
@@ -56,16 +57,31 @@ Paragraphs are the revision's <p> elements, outside tables, with footnote
 markers and edit links removed and whitespace collapsed. Keeping the page-number
 citations SQuAD sometimes shows (":121,154") matched no extra paragraph.
 
+EVIDENCE IS THE PARAGRAPH, NOT THE ANSWER: an item's one evidence span is the
+paragraph its question was written against, and the annotators' answer spans
+are kept in `metadata.answer_spans`. Answers have a median of 16 characters
+against the paragraph's 701, so with them as evidence `evidence_recall` was
+nearly the same as `hit` and credited a chunk that holds the answer words but
+cuts off the sentence that makes them an answer. Their several annotators also
+mark different spans, each enough alone, which pooled evidence counted as all
+needed. The paragraph is what a retriever should return, and is the
+granularity of Natural Questions' long answer.
+
+Split: validation, the smallest public one (48 articles, 10,570 questions;
+train has 442 articles, and test is hidden). Every question is answerable.
+
 Only plain text is written. SQuAD keeps no section headings, so there is no
 structure to mark; the article title is the sole heading and would not make a
 Markdown rendering worth comparing against the text one.
 
 Outputs:
   data/documents/<article>.txt   one Wikipedia article per document
-  data/items.jsonl               {question, answer, evidences} records
+  data/items.jsonl               {question, answer, evidences} records; the
+                                 evidence is the paragraph, the answer spans
+                                 are in metadata.answer_spans
 
 Requires: huggingface_hub, pandas, pyarrow, requests, beautifulsoup4
-Run with: python datasets/squad/load.py [--max-documents 100] [--delay 0.3]
+Run with: python datasets/squad/load.py [--splits validation] [--delay 0.3]
 """
 
 import argparse
@@ -218,17 +234,16 @@ def build_document(blocks):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--max-documents", type=int, default=100,
-        help="Cap on the number of articles kept. Validation supplies 48 and the "
-             "rest are filled from train, which keeps the corpus large enough that "
-             "retrieval is not trivial. An article none of whose paragraphs is "
-             "found is skipped and the next one taken. Pass 0 for no cap (490 "
-             "articles, one fetch each).",
+        "--max-documents", type=int, default=0,
+        help="Cap on the number of articles kept, taken split by split. An article "
+             "none of whose paragraphs is found is skipped and the next one taken. "
+             "Defaults to 0, no cap: validation's 48 articles.",
     )
     parser.add_argument(
-        "--splits", nargs="+", default=["validation", "train"],
+        "--splits", nargs="+", default=["validation"],
         choices=["validation", "train"],
-        help="Splits to draw articles from, in order of preference.",
+        help="Splits to draw articles from, in order of preference. Defaults to "
+             "validation, the smallest.",
     )
     parser.add_argument(
         "--delay", type=float, default=0.3,
@@ -315,7 +330,7 @@ def main():
         base = found[row.context]
         context, positions = fold(row.context)
 
-        evidences = []
+        answer_spans = []
         seen = set()
         answers = row.answers
         for answer_text, answer_start in zip(answers["text"], answers["answer_start"]):
@@ -330,7 +345,7 @@ def main():
                 continue
             seen.add((start, end))
             located += 1
-            evidences.append({
+            answer_spans.append({
                 "doc_id": doc_id,
                 "text": text[start:end],
                 "start": start,
@@ -339,16 +354,27 @@ def main():
                 "kind": "answer_span",
             })
 
-        if not evidences:
+        if not answer_spans:
             # SQuAD 1.1 has no unanswerable questions, so this means a broken row.
             empty += 1
             continue
+        if text[base:base + len(context)] != context:
+            raise AssertionError(f"{row.id}: paragraph not at offset {base} of {doc_id}")
 
         items.append({
             "id": f"squad-{row.id}",
             "question": row.question,
             "answer": answers["text"][0],
-            "evidences": evidences,
+            # The paragraph the question was written against is the evidence,
+            # not the answer spans inside it (see the module docstring).
+            "evidences": [{
+                "doc_id": doc_id,
+                "text": context,
+                "start": base,
+                "end": base + len(context),
+                "match": "folded",
+                "kind": "paragraph",
+            }],
             "metadata": {
                 "doc_id": doc_id,
                 "title": row.title,
@@ -358,13 +384,7 @@ def main():
                 "answer_type": "extractive",
                 "answers": list(answers["text"]),
                 "annotators": len(answers["text"]),
-                # The paragraph the question was written against, which is the
-                # gold passage a retriever should return.
-                "context_span": {
-                    "doc_id": doc_id,
-                    "start": base,
-                    "end": base + len(context),
-                },
+                "answer_spans": answer_spans,
             },
         })
 
@@ -373,7 +393,7 @@ def main():
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     print(f"Wrote {len(items):,} items to {ITEMS_PATH}")
-    print(f"  answer spans located: {located:,} "
+    print(f"  evidence: the question's paragraph; answer spans located: {located:,} "
           f"({located / len(items):.1f} per question, from up to six annotators)")
     if mismatched:
         print(f"  {mismatched:,} offsets did not match their answer text")

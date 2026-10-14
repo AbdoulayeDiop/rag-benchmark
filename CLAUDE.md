@@ -53,16 +53,18 @@ docstring:
   (`cross_encoder` with `model`, `top_k`, `max_tokens`, `tokenizer`; `8192`
   and `BAAI/bge-m3` cut chunks to the reranker's pair limit), `max_items`,
   `workers`.
-- `evaluate`: `results` (retrieval or reranking runs), `ragas` (`judge_model`,
-  `k`, `max_items`, `requests_per_minute`, `workers`).
+- `evaluate`: `results` (retrieval or reranking runs), `max_items` (the first
+  that many questions of the sample order, for the span metrics and the RAGAS
+  sample alike), `ragas` (`judge_model`, `k`, `max_items`,
+  `requests_per_minute`, `workers`).
 
 A list inside `params` is a sweep. A small `max_documents` run is the quickest
 end-to-end check; re-running the same file resumes rather than repeats, and a
 directory started with another configuration is refused.
 
 Loader flags vary per dataset: `--splits` (conditionalqa, literaryqa, poquad,
-qasper, squad), `--split` (triviaqa), `--max-documents` (naturalquestions, squad,
-techqa, triviaqa), `--delay` (literaryqa, poquad, squad, which fetch from the web).
+qasper, squad, techqa), `--split` (triviaqa), `--max-documents` (naturalquestions, squad,
+triviaqa), `--delay` (literaryqa, poquad, squad, which fetch from the web).
 
 LLM and embedding calls read `OPENAI_API_KEY` and `OPENAI_API_BASE` and target an
 OpenAI-compatible endpoint, not OpenAI itself. No model name is hard-coded:
@@ -73,9 +75,11 @@ file, and only `app.py` falls back to the environment (`LLM_MODEL`,
 `bge-m3` for embeddings and `mistral-small-3-2-24b-instruct-2506` for generation. The
 endpoint allows LLM calls 128,000 input tokens per minute, which makes
 augmentation and LumberChunker the slow stages. Embedding is not under that
-limit: one request at a time runs at about 740,000 tokens a minute, and 8
-concurrent requests at about 2.8M (measured 2026-10-02). An embedding request
-takes at most 64 texts. Its `/rerank` route
+limit: with 64 texts a request, one request at a time ran at about 2.1M tokens
+a minute, 4 concurrent requests at about 6.4M and 8 no faster (measured
+2026-10-12; 740,000 and 2.8M on 2026-10-02). An embedding request takes at most
+64 texts, so `embed_nodes` keeps `workers` requests in flight (4, the
+configuration's `workers` in `experiments.ingest`). Its `/rerank` route
 (`bge-reranker-v2-m3`) takes at most 64 documents a request and refuses a
 query–document pair over 8,192 tokens.
 
@@ -85,7 +89,7 @@ query–document pair over 8,192 tokens.
 |---|---|
 | `datasets/<name>/load.py` | One standalone loader per dataset (9 built; NovelQA and MS MARCO deliberately skipped, see README) |
 | `datasets/<name>/data/`, `.cache/` | Loader output and download cache. Gitignored, rebuilt rather than committed |
-| `datasets/literaryqa/vendor/` | Upstream LiteraryQA cleaning code pinned at the commit in `vendor/COMMIT`. Do not edit; `structure.py` is the adapted variant |
+| `datasets/literaryqa/vendor/` | Upstream LiteraryQA cleaning code pinned at the commit in `vendor/COMMIT`. Do not edit, except to fix a bug, marked "Local fix" in a comment (one so far: the mirror path in `download.py`); `structure.py` is the adapted variant |
 | `rag/chunking/` | Chunking methods and the `Chunk` type |
 | `rag/augmentation/` | Chunk augmentation methods |
 | `rag/llm.py` | `get_client()` and `call_llm()`, shared by `chunking/lumberchunker.py` and `augmentation/`; `usage()`/`usage_since()`: tokens the endpoint reports, counted by an httpx hook (`count_usage`) on every client, and rate-limit waits |
@@ -135,8 +139,10 @@ scored by span overlap however a document was cut. Consequences:
 All loaders write the same layout (`documents/<doc_id>.txt`, optional
 `documents_md/` and `documents_html/`, and `items.jsonl`); the item schema is in
 the README under "Dataset processing". Each loader's module docstring explains
-why the source was reshaped. Loaders default to the smallest representative
-split because corpus size is the binding constraint on local compute.
+why the source was reshaped. Loaders default to the smallest split with
+answers, keep only answerable questions (the experiments score retrieval), and
+write only the documents those questions use, even where the corpus is shared
+between splits, because corpus size is the binding constraint on local compute.
 
 ## Chunking
 

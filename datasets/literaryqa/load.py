@@ -20,6 +20,15 @@ has an empty `evidences` list. It is usable for end-to-end answer quality, not f
 retrieval precision, and it is the long-document counterpart to datasets like
 GutenQA that do have spans.
 
+QUESTIONS NAME THEIR BOOK: each question is written as `In "<title>", <question>`,
+with the title as LiteraryQA records it, less a disambiguation suffix
+("Doctors (novel)"), and the annotator's wording is kept in
+`metadata.original_question`. The questions were written for one book, from its
+summary, and most name a character but not the book ("Who is Rebecca's best
+friend at Riverboro?"); over a corpus of books, a character's name can belong
+to several. A user asking a RAG system over a library would name the book, so
+the title is added, as for Qasper and GutenQA.
+
 Because the source is HTML with real heading tags, each book is written three
 ways -- plain text, Markdown and HTML -- so that structure-aware chunking can be
 compared against flat text. All three contain the same cleaned content; they
@@ -32,13 +41,14 @@ Outputs:
   data/items.jsonl                      {question, answer, evidences} records
 
 Requires: huggingface_hub, requests, tqdm, chardet, beautifulsoup4[html5lib], ftfy, loguru
-Run with: python datasets/literaryqa/load.py [--splits test train validation]
+Run with: python datasets/literaryqa/load.py [--splits validation test train]
 """
 
 import argparse
 import csv
 import html as html_module
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -179,8 +189,11 @@ def build_documents(rows, titles, delay):
     Returns ({gutenberg_id: doc_id}, failed ids, books whose structure could not
     be recovered and so got plain text only).
     """
+    # A previous build may have written books of other splits.
     for directory in (DOCUMENTS_DIR, MARKDOWN_DIR, HTML_DIR):
         directory.mkdir(parents=True, exist_ok=True)
+        for stale in directory.iterdir():
+            stale.unlink()
     written = {}
     failed = []
     flat = []
@@ -220,6 +233,18 @@ def build_documents(rows, titles, delay):
     return written, failed, flat
 
 
+def with_title(question, title):
+    """The question prefixed with the title of the book it is asked of.
+
+    The first letter is lowered unless the first word is an acronym ("BBC").
+    """
+    question = " ".join(question.split())
+    first = question.split(" ", 1)[0]
+    if not (len(first) > 1 and first[1].isupper()):
+        question = question[0].lower() + question[1:]
+    return f'In "{title}", {question}'
+
+
 def build_items(records, documents):
     """Turn each annotated question into a {question, answer, evidences} record."""
     items = []
@@ -234,7 +259,8 @@ def build_items(records, documents):
             answers = list(qa["answers"])
             items.append({
                 "id": f"literaryqa-{record['document_id']}-{index:03d}",
-                "question": qa["question"],
+                "question": with_title(qa["question"],
+                                       re.sub(r"\s*\([^)]*\)$", "", record["title"])),
                 "answer": answers[0],
                 # LiteraryQA has no span annotations; see the note at the top.
                 "evidences": [],
@@ -244,6 +270,7 @@ def build_items(records, documents):
                     "title": record["title"],
                     "split": record["split"],
                     "answers": answers,
+                    "original_question": qa["question"],
                 },
             })
     return items, skipped
@@ -252,9 +279,9 @@ def build_items(records, documents):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--splits", nargs="+", default=["test"], choices=["train", "validation", "test"],
-        help="Splits to build. Defaults to test (138 books), the split used to report "
-             "LiteraryQA document statistics; all three total 650 books.",
+        "--splits", nargs="+", default=["validation"], choices=["train", "validation", "test"],
+        help="Splits to build. Defaults to validation (47 books, 1,417 questions), the "
+             "smallest; test has 138 books and train 465.",
     )
     parser.add_argument(
         "--delay", type=float, default=0.5,

@@ -96,7 +96,7 @@ def pace(llm, requests_per_minute=None, attempts=5):
     return llm
 
 
-def judge_metrics(model, requests_per_minute=None, max_output_tokens=2048):
+def judge_metrics(model, requests_per_minute=None):
     """The RAGAS `(ContextPrecision, ContextRecall)` pair judged by `model`.
 
     Call it inside the event loop that will run them. `max_output_tokens`
@@ -106,8 +106,7 @@ def judge_metrics(model, requests_per_minute=None, max_output_tokens=2048):
     # judge's requests a minute on refusals. `pace` retries instead.
     client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""),
                          base_url=os.getenv("OPENAI_API_BASE"), max_retries=0)
-    llm = pace(llm_factory(model, client=client, temperature=0.0, max_tokens=max_output_tokens),
-               requests_per_minute)
+    llm = pace(llm_factory(model, client=client, temperature=0.0), requests_per_minute)
     return ContextPrecision(llm=llm), ContextRecall(llm=llm)
 
 

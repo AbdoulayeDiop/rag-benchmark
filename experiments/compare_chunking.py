@@ -23,7 +23,8 @@ It prints two things:
   score or rank would not.
 
 The figures are those of the `evidence` group of questions. A dataset with no
-evidence spans (LiteraryQA) has none and is left out. Every metric favours
+evidence spans (LiteraryQA, TriviaQA) has none, and is shown only with
+`--judge`, by its RAGAS figures. Every metric favours
 large chunks, so read them against the `chunk chars` column. Two rows of a
 dataset are comparable only if they were scored on the same questions: a
 dataset whose rows differ in `docs` or `items` is flagged under its table.
@@ -63,12 +64,11 @@ def is_baseline(summary):
 
 
 def metrics(summary):
-    """The ranking's metrics over the questions with evidence; empty if there are none.
+    """The ranking's metrics over the questions with evidence, and RAGAS's when `attach_ragas` found them.
 
-    RAGAS's, when `attach_ragas` found them, are among them.
+    Empty when there are neither.
     """
-    spans = summary["metrics"].get("evidence", {})
-    return {**spans, **summary.get("judged_metrics", {})} if spans else {}
+    return {**summary["metrics"].get("evidence", {}), **summary.get("judged_metrics", {})}
 
 
 def attach_ragas(summary, judge_model, k):
@@ -176,11 +176,11 @@ def main():
     for dataset, summaries in collect().items():
         if arguments.datasets and dataset not in arguments.datasets:
             continue
-        summaries = [summary for summary in summaries
-                     if is_baseline(summary) and metrics(summary)]
+        summaries = [summary for summary in summaries if is_baseline(summary)]
         if arguments.judge:
             for summary in summaries:
                 attach_ragas(summary, arguments.judge, arguments.k)
+        summaries = [summary for summary in summaries if metrics(summary)]
         if not summaries:
             continue
         chosen[dataset] = best(summaries, arguments.metric)

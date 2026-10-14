@@ -221,9 +221,15 @@ def evidence_spans(item, rendering):
 
 
 def item_documents(item):
-    """The documents an item's answer is in: those of its evidence, or the one it names."""
+    """The documents an item's answer is in: those of its evidence, or those it names.
+
+    An item without evidence names one document in `metadata.doc_id`
+    (LiteraryQA) or several in `metadata.doc_ids` (TriviaQA).
+    """
     documents = sorted({evidence["doc_id"] for evidence in item["evidences"]})
-    if not documents and item["metadata"].get("doc_id"):
+    if not documents and item["metadata"].get("doc_ids"):
+        documents = sorted(set(item["metadata"]["doc_ids"]))
+    elif not documents and item["metadata"].get("doc_id"):
         documents = [item["metadata"]["doc_id"]]
     return documents
 
@@ -241,16 +247,20 @@ def load_items(dataset, rendering, indexed):
 
     Returns them in sample order, each with its `question`, `answer`,
     `spans` and `documents`, and a count of those left out and why. A question
-    tied to no document is left out, and so is one whose documents are not all
-    in the index -- an index over `max_documents` holds part of a corpus, and a
+    its loader marks unanswerable is left out, since there is nothing to
+    retrieve for it. So is one tied to no document, and one whose documents are
+    not all in the index -- an index over `max_documents` holds part of a corpus, and a
     question about a document it lacks could never be answered -- and one whose
     evidence is not in the index's rendering.
     """
-    items, skipped = [], {"no_document": 0, "not_indexed": 0, "not_in_rendering": 0}
+    items, skipped = [], {"unanswerable": 0, "no_document": 0, "not_indexed": 0,
+                          "not_in_rendering": 0}
     for item in read_jsonl(DATASETS / dataset / "data" / "items.jsonl"):
         documents = item_documents(item)
         spans = evidence_spans(item, rendering)
-        if not documents:
+        if item["metadata"].get("answer_type") == "unanswerable":
+            skipped["unanswerable"] += 1
+        elif not documents:
             skipped["no_document"] += 1
         elif not indexed.issuperset(documents):
             skipped["not_indexed"] += 1

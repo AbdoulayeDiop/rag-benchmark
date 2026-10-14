@@ -111,7 +111,11 @@ def download_htm_from_gutenberg(book_id: str, split: str, save_dir: Path, log_di
         text = detect_encoding_and_read(html_file)
     else:
         # Try to download the file from the mirrors
-        subfolders = "/".join(book_id[0:4])
+        # Local fix (not upstream): Gutenberg files a book under every digit of
+        # its id but the last (1230 -> 1/2/3/1230), and single-digit ids under 0.
+        # Upstream joined the first four digits, right only for five-digit ids:
+        # 1230 got 1/2/3/0 and a 404 on both mirrors.
+        subfolders = "/".join(book_id[:-1]) or "0"
         urls = [url.format(book_id=book_id, subfolders=subfolders) for url in SPECIAL_MIRRORS]
         html_url = "{mirror}{book_id}/{book_id}-h.htm"
         urls.extend([html_url.format(mirror=mirror, book_id=book_id) for mirror in MIRRORS])

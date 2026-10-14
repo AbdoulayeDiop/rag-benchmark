@@ -43,7 +43,7 @@ from ..llm import count_usage
 from .base import split_spans, to_chunks
 from .segment import sentence_pieces, sentence_spans
 
-load_dotenv()
+load_dotenv(override=True)
 
 def openai_embedding(model, api_key=None, api_base=None,
                      proxy=None, batch_size=64, timeout=60.0, **kwargs):

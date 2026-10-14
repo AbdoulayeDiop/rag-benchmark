@@ -5,30 +5,57 @@ Dataset, modelled on SQuAD 2.0: extractive answer spans plus deliberately
 unanswerable questions, over Polish Wikipedia, with an extra generative answer
 layer. It is the only non-English dataset in this repository.
 
-WHY THIS SCRIPT REBUILDS THE DOCUMENTS: as distributed, every PoQuAD record is a
-single paragraph of about 930 characters (964 of them in dev, 7,708 in train).
-That is a passage collection, not a document collection -- chunking has nothing
-to do at that size. Each record does carry the URL of the Wikipedia article its
-paragraph was taken from, so this script fetches the full article and relocates
-the answer spans into it, producing documents of roughly 24k characters that
-still carry exact character-level evidence.
+WHY THIS REFETCHES THE ARTICLES: as distributed, every PoQuAD record is a single
+passage of about 930 characters (964 of them in dev, 7,708 in train). That is a
+passage collection, not a document collection -- chunking has nothing to do at
+that size. Each record carries the URL of the Wikipedia article its passage was
+taken from, so this script fetches the article and relocates the passage and its
+answer spans into it.
 
-The cost is drift: the paragraphs were extracted in 2022 and Wikipedia has moved
-on, so a paragraph that no longer appears in its article cannot be relocated and
-its questions are dropped. The script reports exactly how many were lost.
+WHICH REVISION: the articles have been edited since PoQuAD was built, and
+fetching them as they are today loses every passage that was edited since: 379
+of 959 dev passages, and 1,837 questions, when this script fetched live
+extracts. So each article is fetched as it stood on REVISION_DATE, the date of
+the last data update in the PoQuAD repository (1 September 2022). The records
+give no revision of their own, and the passages were written over the months
+before that date, so one date for every article is a simplification, as it is
+for SQuAD.
 
-Answer spans are the evidence. For unanswerable questions `evidences` is empty by
-construction, and `metadata.context_span` records the passage the question was
-written against, which stays useful for checking whether retrieval finds the
-right region even when no answer exists.
+PAGE MOVES: as in the SQuAD loader, a title is resolved through the move log --
+every move away from it after REVISION_DATE, followed to the end -- and the
+revision is read from the page that held the title on that date, without
+following redirects, which point at whichever page holds a title today.
+
+Paragraphs are the revision's <p> elements, outside tables, with footnote
+markers and edit links removed and whitespace collapsed, joined by a blank line.
+A passage is located on the document with all whitespace collapsed, so a
+passage that spans two paragraphs is found too, and its offsets are carried
+back to the document. Answer offsets are passage-relative, so they shift by the
+passage's position and stay exact.
+
+Only plain text is written. Section headings are not <p> elements, so the
+document holds none, and there is no structure for a Markdown rendering to mark.
+
+EVIDENCE IS THE PASSAGE, NOT THE ANSWER: an item's one evidence span is the
+passage its question was written against, relocated into the article, and the
+answer spans inside it are kept in `metadata.answer_spans`, as for SQuAD. An
+answer of a few words made `evidence_recall` nearly the same as `hit`, credited
+a chunk that holds the answer words but cuts off the sentence that makes them an
+answer, and, with several annotators' answers pooled, counted as all needed
+spans of which any one is enough. The passage is what a retriever should return.
+
+Only answerable questions are kept: the
+experiments score retrieval, and an unanswerable question has nothing to
+retrieve. An article that keeps no question is not written.
 
 Outputs:
   data/documents/<article>.txt      one Wikipedia article per document
-  data/documents_md/<article>.md    the same article with Markdown headings
-  data/items.jsonl                  {question, answer, evidences} records
+  data/items.jsonl                  {question, answer, evidences} records; the
+                                    evidence is the passage, the answer spans
+                                    are in metadata.answer_spans
 
-Requires: requests
-Run with: python datasets/poquad/load.py [--splits dev train]
+Requires: requests, beautifulsoup4, tqdm
+Run with: python datasets/poquad/load.py [--splits dev train] [--delay 0.3]
 """
 
 import argparse
@@ -39,56 +66,154 @@ import urllib.parse
 from pathlib import Path
 
 import requests
+from bs4 import BeautifulSoup
+from tqdm import tqdm
 
 SOURCE = "https://raw.githubusercontent.com/weed478/poquad/master/poquad_{split}.json"
 API = "https://pl.wikipedia.org/w/api.php"
 # Wikipedia requires a descriptive User-Agent; requests without one are refused.
 USER_AGENT = "rag-experiments/0.1 (research dataset preparation; contact via repository)"
+# The revision of every article is the one live at this moment: the last data
+# update of the PoQuAD repository.
+REVISION_DATE = "2022-09-01T00:00:00Z"
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DOCUMENTS_DIR = DATA_DIR / "documents"
-MARKDOWN_DIR = DATA_DIR / "documents_md"
 ITEMS_PATH = DATA_DIR / "items.jsonl"
 CACHE_DIR = ROOT / ".cache"
+REVISIONS_DIR = CACHE_DIR / f"revisions-{REVISION_DATE[:10]}"
 
-BLOCK_SEPARATOR = "\n\n"
-# MediaWiki plain-text extracts keep section headings as "== Name ==", where the
-# number of equals signs is the real heading level.
-HEADING_PATTERN = re.compile(r"^(=+)\s*(.+?)\s*\1$")
+PARAGRAPH_SEPARATOR = "\n\n"
+
+
+def document_id(title):
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title).strip(". ")[:120] or "untitled"
 
 
 def fold(text):
-    """Collapse whitespace, returning the folded text and an offset map."""
-    folded, offsets = [], []
-    after_space = False
-    for index, char in enumerate(text):
+    """Collapse whitespace runs to one space and strip the ends.
+
+    Returns the folded text and, for each index of `text` plus its end, the
+    index it lands on in the folded text, so that offsets can be carried over.
+    """
+    folded, positions = [], []
+    pending_space = False
+    for char in text:
         if char.isspace():
-            if not after_space:
-                folded.append(" ")
-                offsets.append(index)
-                after_space = True
+            # A run becomes one space at len(folded), written before the next
+            # character; leading and trailing runs are dropped.
+            pending_space = bool(folded)
+            positions.append(len(folded))
             continue
-        after_space = False
+        if pending_space:
+            folded.append(" ")
+            pending_space = False
+        positions.append(len(folded))
         folded.append(char)
-        offsets.append(index)
-    offsets.append(len(text))
-    return "".join(folded), offsets
+    positions.append(len(folded))
+    return "".join(folded), positions
 
 
-def find(needle, haystack, folded_haystack, offsets, base=0):
-    """Locate `needle`, verbatim then on the folded text. Returns (start, end, how)."""
-    at = haystack.find(needle)
-    if at != -1:
-        return base + at, base + at + len(needle), "exact"
-    target = re.sub(r"\s+", " ", needle).strip()
-    if not target:
+def unfold(text):
+    """The folded text of `text`, and the index in `text` of each folded character.
+
+    The inverse of `fold`'s positions: a folded span `[a, b)` that starts and
+    ends on a character other than a space is `text[back[a]:back[b - 1] + 1]`.
+    """
+    folded, positions = fold(text)
+    back = [0] * len(folded)
+    for index, char in enumerate(text):
+        if not char.isspace():
+            back[positions[index]] = index
+    return folded, back
+
+
+def source(split):
+    """PoQuAD's records for one split, downloaded once."""
+    cached = CACHE_DIR / f"poquad_{split}.json"
+    if not cached.exists():
+        response = requests.get(SOURCE.format(split=split), timeout=300)
+        response.raise_for_status()
+        cached.write_bytes(response.content)
+    return json.loads(cached.read_text(encoding="utf-8"))["data"]
+
+
+def call(session, delay, params, attempts=5):
+    """One API request, honouring the Retry-After of a 429."""
+    for _ in range(attempts):
+        time.sleep(delay)
+        response = session.get(API, params={**params, "format": "json", "formatversion": 2}, timeout=120)
+        if response.status_code == 429:
+            time.sleep(float(response.headers.get("Retry-After", 11)))
+            continue
+        response.raise_for_status()
+        return response.json()
+    raise requests.RequestException(f"rate limited after {attempts} attempts")
+
+
+def resolve(session, delay, title):
+    """Find the page that held `title` on REVISION_DATE and its revision then.
+
+    Follows every move away from the title made after that date, so the answer is
+    the page's title today. Returns a dict with `title`, `moves`, `revid` and
+    `timestamp`, or None if the page had no revision by that date.
+    """
+    current, since, after, moves = title, REVISION_DATE, 0, []
+    while True:
+        events = call(session, delay, {
+            "action": "query", "list": "logevents", "letype": "move", "letitle": current,
+            "lestart": since, "ledir": "newer", "lelimit": 10,
+        })["query"]["logevents"]
+        # A title swap logs its moves within one second, the other page leaving
+        # the title just before ours arrives, so only a move logged after our
+        # arrival counts.
+        event = next((e for e in events if e["logid"] > after), None)
+        if event is None:
+            break
+        target = event["params"]["target_title"]
+        moves.append({"timestamp": event["timestamp"], "from": current, "to": target})
+        current, since, after = target, event["timestamp"], event["logid"]
+
+    # No `redirects`: a redirect points at whichever page holds a title today.
+    pages = call(session, delay, {
+        "action": "query", "prop": "revisions", "titles": current, "rvlimit": 1,
+        "rvstart": REVISION_DATE, "rvdir": "older", "rvprop": "ids|timestamp",
+    })["query"]["pages"]
+    revisions = pages[0].get("revisions") if pages else None
+    if not revisions:
         return None
-    at = folded_haystack.find(target)
-    if at == -1:
-        return None
-    end = at + len(target)
-    return base + offsets[at], base + offsets[end - 1] + 1, "folded"
+    return {"title": current, "moves": moves,
+            "revid": revisions[0]["revid"], "timestamp": revisions[0]["timestamp"]}
+
+
+def fetch(session, delay, title):
+    """The resolved revision of an article and its rendered HTML, cached on disk."""
+    cached = REVISIONS_DIR / f"{document_id(title)}.json"
+    if cached.exists():
+        return json.loads(cached.read_text(encoding="utf-8"))
+    revision = resolve(session, delay, title)
+    if revision is not None:
+        revision["html"] = call(session, delay, {
+            "action": "parse", "oldid": revision["revid"], "prop": "text",
+        })["parse"]["text"]
+    cached.write_text(json.dumps(revision, ensure_ascii=False), encoding="utf-8", newline="\n")
+    return revision
+
+
+def paragraphs(html):
+    """The article's body paragraphs: <p> elements outside tables, without footnote markers."""
+    soup = BeautifulSoup(html, "html.parser")
+    for element in soup.select("sup.reference, .mw-editsection"):
+        element.decompose()
+    blocks = []
+    for paragraph in soup.find_all("p"):
+        if paragraph.find_parent("table"):
+            continue
+        text = fold(paragraph.get_text())[0]
+        if text:
+            blocks.append(text)
+    return blocks
 
 
 def article_title(url):
@@ -96,190 +221,126 @@ def article_title(url):
     return urllib.parse.unquote(url.rsplit("/", 1)[-1]).replace("_", " ")
 
 
-def safe_name(title):
-    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title).rstrip(". ")[:120]
+def build(records, split, session, delay, stats, documents, skipped, weak, moved):
+    """Fetch the articles of one split's records and turn its questions into items.
 
-
-def fetch_extract(session, title, delay, attempts=5):
-    """Download an article's plain-text extract, cached on disk.
-
-    Whole-article extracts are expensive to render, so Wikipedia rate-limits them
-    hard: `exlimit` is forced to 1 (no batching) and roughly one request in ten
-    comes back 429 with a Retry-After header. Honouring that header is what keeps
-    this to a few seconds per article -- guessing a backoff instead turns it into
-    about a minute per article.
+    `documents` maps an article title to `(doc_id, text, revision)` and is
+    shared between splits, so an article is fetched and written once.
     """
-    cached = CACHE_DIR / f"{safe_name(title)}.txt"
-    if cached.exists():
-        return cached.read_text(encoding="utf-8")
+    by_title = {}
+    for record in records:
+        by_title.setdefault(article_title(record["url"]), []).append(record)
 
-    for _ in range(attempts):
-        time.sleep(delay)
-        response = session.get(API, params={
-            "action": "query", "prop": "extracts", "explaintext": 1,
-            "titles": title, "format": "json", "redirects": 1, "formatversion": 2,
-        }, timeout=60)
-        if response.status_code == 429:
-            time.sleep(float(response.headers.get("Retry-After", 11)))
-            continue
-        response.raise_for_status()
-        pages = response.json().get("query", {}).get("pages", [])
-        extract = pages[0].get("extract", "") if pages else ""
-        cached.write_text(extract, encoding="utf-8")
-        return extract
-    raise requests.RequestException(f"rate limited after {attempts} attempts")
-
-
-def render(extract):
-    """Split an extract into blocks and render plain text and Markdown.
-
-    Headings keep their text in both files and their level only in Markdown, so
-    the two renderings hold the same words and differ only in structure.
-    """
-    plain_parts, markdown_parts, spans = [], [], []
-    plain_at = markdown_at = 0
-    for block in re.split(r"\n{2,}", extract):
-        block = block.strip()
-        if not block:
-            continue
-        match = HEADING_PATTERN.match(block)
-        if match:
-            level = min(len(match.group(1)), 6)
-            content = match.group(2)
-            rendered = f"{'#' * level} {content}"
-            shift = markdown_at + level + 1 - plain_at
-        else:
-            content = block
-            rendered = block
-            shift = markdown_at - plain_at
-        spans.append({
-            "plain": (plain_at, plain_at + len(content)),
-            "markdown": (markdown_at, markdown_at + len(rendered)),
-            "shift": shift,
-        })
-        plain_parts.append(content)
-        markdown_parts.append(rendered)
-        plain_at += len(content) + len(BLOCK_SEPARATOR)
-        markdown_at += len(rendered) + len(BLOCK_SEPARATOR)
-    return BLOCK_SEPARATOR.join(plain_parts), BLOCK_SEPARATOR.join(markdown_parts), spans
-
-
-def to_markdown_span(start, end, spans):
-    """Map a plain-text span onto the Markdown rendering."""
-    for span in spans:
-        plain_start, plain_end = span["plain"]
-        if plain_start <= start and end <= plain_end:
-            return start + span["shift"], end + span["shift"]
-    return None
-
-
-def build(split, session, delay, stats):
-    """Fetch articles for one split and turn its questions into items."""
-    payload = requests.get(SOURCE.format(split=split), timeout=300).json()["data"]
-    print(f"{split}: {len(payload)} records, "
-          f"{sum(len(p['qas']) for a in payload for p in a['paragraphs'])} questions")
-
-    documents = {}
     items = []
-    for record in payload:
-        title = article_title(record["url"])
-        doc_id = safe_name(title)
-
-        if doc_id not in documents:
-            try:
-                extract = fetch_extract(session, title, delay)
-            except requests.RequestException as error:
-                print(f"  ! {title}: {error}")
-                stats["fetch_failed"] += 1
+    bar = tqdm(by_title.items(), desc=f"{split} articles", unit="article")
+    for title, group in bar:
+        passages = [(record, paragraph) for record in group for paragraph in record["paragraphs"]]
+        stats["passages"] += len(passages)
+        stats["questions"] += sum(len(paragraph["qas"]) for _, paragraph in passages)
+        if title not in documents:
+            revision = fetch(session, delay, title)
+            if revision is None:
+                skipped.append(f"{title} (no revision by {REVISION_DATE[:10]})")
+                tqdm.write(f"  skipped {skipped[-1]}")
                 continue
-            if not extract.strip():
-                stats["fetch_empty"] += 1
-                continue
-            plain, markdown, spans = render(extract)
-            folded, offsets = fold(plain)
-            documents[doc_id] = (plain, markdown, spans, folded, offsets)
+            text = PARAGRAPH_SEPARATOR.join(paragraphs(revision["html"]))
+            documents[title] = (document_id(title), text, revision, unfold(text), [])
+            if revision["title"] != title:
+                moved.append(f"{title} -> {revision['title']}")
+        doc_id, text, revision, (folded, back), _ = documents[title]
 
-        plain, markdown, spans, folded, offsets = documents[doc_id]
-
-        for paragraph in record["paragraphs"]:
-            context = paragraph["context"]
-            located = find(context, plain, folded, offsets)
-            if located is None:
-                # The article moved on since PoQuAD was built.
-                stats["context_lost"] += 1
-                stats["questions_lost"] += len(paragraph["qas"])
+        found = 0
+        for record, paragraph in passages:
+            context, positions = fold(paragraph["context"])
+            at = folded.find(context) if context else -1
+            if at == -1:
                 continue
-            context_start, context_end, _ = located
-            stats["context_found"] += 1
-            region = plain[context_start:context_end]
-            region_folded, region_offsets = fold(region)
+            found += 1
+            stats["passages_found"] += 1
+            context_start, context_end = back[at], back[at + len(context) - 1] + 1
 
             for index, qa in enumerate(paragraph["qas"]):
-                evidences = []
                 answers = qa.get("answers") or []
+                if qa.get("is_impossible") or not answers:
+                    stats["unanswerable_dropped"] += 1
+                    continue
+                stats["questions_kept"] += 1
+                answer_spans = []
+                seen = set()
                 for answer in answers:
-                    span = find(answer["text"], region, region_folded, region_offsets, context_start)
-                    if span is None:
-                        stats["answer_lost"] += 1
+                    answer_text = fold(answer["text"])[0]
+                    start = positions[answer["answer_start"]]
+                    end = positions[answer["answer_start"] + len(answer["text"])]
+                    if not answer_text or folded[at + start:at + end] != answer_text:
+                        stats["answers_mismatched"] += 1
                         continue
-                    start, end, how = span
-                    markdown_span = to_markdown_span(start, end, spans)
-                    stats["answer_found"] += 1
-                    evidences.append({
+                    span = (back[at + start], back[at + end - 1] + 1)
+                    if span in seen:
+                        continue
+                    seen.add(span)
+                    stats["answers_located"] += 1
+                    answer_spans.append({
                         "doc_id": doc_id,
-                        "text": plain[start:end],
-                        "start": start,
-                        "end": end,
-                        "match": how,
+                        "text": text[span[0]:span[1]],
+                        "start": span[0],
+                        "end": span[1],
+                        "match": "offset",
                         "kind": "answer_span",
-                        "markdown": (
-                            {"start": markdown_span[0], "end": markdown_span[1]}
-                            if markdown_span else None
-                        ),
                     })
+                if not answer_spans:
+                    # An answerable question whose answer did not survive the
+                    # relocation: it cannot be scored, so it is left out.
+                    stats["questions_kept"] -= 1
+                    stats["answerable_dropped"] += 1
+                    continue
 
-                impossible = bool(qa.get("is_impossible"))
-                context_markdown = to_markdown_span(context_start, context_end, spans)
                 items.append({
                     "id": f"poquad-{split}-{record['id']}-{index:02d}",
                     "question": qa["question"],
-                    "answer": "Unanswerable" if impossible else (
-                        answers[0]["text"] if answers else "Unanswerable"
-                    ),
-                    "evidences": [] if impossible else evidences,
+                    "answer": answers[0]["text"],
+                    # The passage the question was written against is the
+                    # evidence, not the answer spans inside it (see the module
+                    # docstring).
+                    "evidences": [{
+                        "doc_id": doc_id,
+                        "text": text[context_start:context_end],
+                        "start": context_start,
+                        "end": context_end,
+                        "match": "folded",
+                        "kind": "passage",
+                    }],
                     "metadata": {
                         "doc_id": doc_id,
                         "title": record["title"],
                         "url": record["url"],
                         "split": split,
                         "language": "pl",
-                        "answer_type": "unanswerable" if impossible else "extractive",
-                        "generative_answer": (
-                            answers[0].get("generative_answer") if answers else None
-                        ),
+                        "wikipedia_title": revision["title"],
+                        "revision_id": revision["revid"],
+                        "answer_type": "extractive",
+                        "generative_answer": answers[0].get("generative_answer"),
                         "answers": [answer["text"] for answer in answers],
-                        # The passage the question was written against, relocated
-                        # into the full article.
-                        "context_span": {
-                            "doc_id": doc_id,
-                            "start": context_start,
-                            "end": context_end,
-                            "markdown": (
-                                {"start": context_markdown[0], "end": context_markdown[1]}
-                                if context_markdown else None
-                            ),
-                        },
+                        "answer_spans": answer_spans,
                     },
                 })
-    return documents, items
+        documents[title][4].append(found)
+        if not found:
+            skipped.append(f"{title} (no passage found)")
+            tqdm.write(f"  skipped {skipped[-1]}")
+        elif found < len(passages) / 2:
+            weak.append(f"{title}: {found}/{len(passages)} passages")
+        bar.set_postfix(passages=f"{stats['passages_found']}/{stats['passages']}",
+                        questions=f"{stats['questions_kept']}/{stats['questions']}",
+                        skipped=len(skipped))
+    return items
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--splits", nargs="+", default=["dev"], choices=["dev", "train"],
-        help="Splits to build. Defaults to dev (964 articles); train is 7,708 "
-             "articles and so 7,708 Wikipedia requests. The test split is not public.",
+        help="Splits to build. Defaults to dev (947 articles); train is 6,701 "
+             "articles, each three Wikipedia requests. The test split is not public.",
     )
     parser.add_argument(
         "--delay", type=float, default=0.3,
@@ -287,47 +348,64 @@ def main():
     )
     args = parser.parse_args()
 
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
-    MARKDOWN_DIR.mkdir(parents=True, exist_ok=True)
-
+    REVISIONS_DIR.mkdir(parents=True, exist_ok=True)
     session = requests.Session()
     session.headers["User-Agent"] = USER_AGENT
 
-    stats = dict.fromkeys(
-        ["fetch_failed", "fetch_empty", "context_found", "context_lost",
-         "questions_lost", "answer_found", "answer_lost"], 0
-    )
-    all_documents, all_items = {}, []
+    stats = dict.fromkeys(["passages", "passages_found", "questions", "questions_kept",
+                           "answers_located", "answers_mismatched", "answerable_dropped",
+                           "unanswerable_dropped"], 0)
+    documents, skipped, weak, moved = {}, [], [], []
+    items = []
     for split in args.splits:
-        documents, items = build(split, session, args.delay, stats)
-        all_documents.update(documents)
-        all_items.extend(items)
+        records = source(split)
+        print(f"{split}: {len(records):,} passages, "
+              f"{sum(len(p['qas']) for r in records for p in r['paragraphs']):,} questions")
+        items += build(records, split, session, args.delay, stats, documents, skipped, weak,
+                       moved)
 
+    # An article is written only if it keeps a question.
+    used = {item["metadata"]["doc_id"] for item in items}
+    kept = {title: entry for title, entry in documents.items() if entry[0] in used}
+    DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    for stale in DOCUMENTS_DIR.glob("*.txt"):
+        stale.unlink()
     lengths = []
-    for doc_id, (plain, markdown, _, _, _) in all_documents.items():
-        (DOCUMENTS_DIR / f"{doc_id}.txt").write_text(plain, encoding="utf-8", newline="\n")
-        (MARKDOWN_DIR / f"{doc_id}.md").write_text(markdown, encoding="utf-8", newline="\n")
-        lengths.append(len(plain))
-    lengths.sort()
-    print(f"Wrote {len(lengths):,} documents to {DOCUMENTS_DIR} and {MARKDOWN_DIR}")
-    print(f"  chars per document: min {lengths[0]:,} / median {lengths[len(lengths) // 2]:,} "
-          f"/ avg {sum(lengths) // len(lengths):,} / max {lengths[-1]:,}")
+    for doc_id, text, _, _, _ in kept.values():
+        (DOCUMENTS_DIR / f"{doc_id}.txt").write_text(text, encoding="utf-8", newline="\n")
+        lengths.append(len(text))
+
+    for item in items:
+        document = (DOCUMENTS_DIR / f"{item['metadata']['doc_id']}.txt").read_text(encoding="utf-8")
+        for evidence in item["evidences"] + item["metadata"]["answer_spans"]:
+            assert document[evidence["start"]:evidence["end"]] == evidence["text"], item["id"]
 
     with ITEMS_PATH.open("w", encoding="utf-8", newline="\n") as handle:
-        for item in all_items:
+        for item in items:
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-    unanswerable = sum(1 for item in all_items if item["metadata"]["answer_type"] == "unanswerable")
-    print(f"Wrote {len(all_items):,} items to {ITEMS_PATH}")
-    print(f"  {len(all_items) - unanswerable:,} answerable, {unanswerable:,} unanswerable")
-    print(f"  passages relocated into their article: {stats['context_found']:,}; "
-          f"lost to article drift: {stats['context_lost']:,} "
-          f"(dropping {stats['questions_lost']:,} questions)")
-    print(f"  answer spans located: {stats['answer_found']:,}; not found inside the passage: "
-          f"{stats['answer_lost']:,}")
-    if stats["fetch_failed"] or stats["fetch_empty"]:
-        print(f"  articles unavailable: {stats['fetch_failed']} failed, {stats['fetch_empty']} empty")
+    lengths.sort()
+    print(f"Wrote {len(lengths):,} documents to {DOCUMENTS_DIR} "
+          f"(revisions live on {REVISION_DATE[:10]})")
+    print(f"  chars per document: min {lengths[0]:,} / median {lengths[len(lengths) // 2]:,} "
+          f"/ avg {sum(lengths) // len(lengths):,} / max {lengths[-1]:,}")
+    print(f"  passages found: {stats['passages_found']:,} of {stats['passages']:,} "
+          f"({stats['passages_found'] / stats['passages']:.0%}); questions kept: "
+          f"{stats['questions_kept']:,} of {stats['questions']:,} "
+          f"({stats['questions_kept'] / stats['questions']:.0%})")
+    print(f"Wrote {len(items):,} answerable items to {ITEMS_PATH}; "
+          f"{stats['unanswerable_dropped']:,} unanswerable questions left out")
+    print(f"  evidence: the question's passage; answer spans located: {stats['answers_located']:,}; not matching their "
+          f"offset: {stats['answers_mismatched']:,}, leaving "
+          f"{stats['answerable_dropped']:,} answerable questions without a span (dropped)")
+    for label, titles in [("moved since", moved), ("under half the passages found", weak),
+                          ("skipped", skipped)]:
+        if titles:
+            print(f"  {len(titles)} articles {label}:")
+            for line in titles[:40]:
+                print(f"    {line}")
+            if len(titles) > 40:
+                print(f"    ... and {len(titles) - 40} more")
 
 
 if __name__ == "__main__":

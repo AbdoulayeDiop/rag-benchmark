@@ -11,7 +11,7 @@ row never mixes `sentence` over Markdown with `sentence` over plain text, or
 hybrid retrieval with dense.
 
 The figures are those of the `evidence` group of questions; a dataset with
-none (LiteraryQA) falls back to `no_evidence`, which has only the
+none (LiteraryQA, TriviaQA) falls back to `no_evidence`, which has only the
 document-level metrics.
 
 Two rows are comparable only if they were scored on the same questions, which

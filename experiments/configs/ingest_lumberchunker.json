@@ -1,0 +1,16 @@
+{
+  "dataset": ["conditionalqa", "naturalquestions", "qasper", "squad", "techqa"],
+  "chunking": [
+    {"method": "lumberchunker", "params": {"llm_model": "openweight-large"}}
+  ],
+  "chunk_augmentation": [
+    {"method": "none"}
+  ],
+  "chunk_embedding": [
+    {
+      "model": "bge-m3",
+      "tokenizer": "BAAI/bge-m3",
+      "context_length": 8192
+    }
+  ]
+}

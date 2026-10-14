@@ -20,7 +20,11 @@ asking or what for. `question` therefore holds the scenario and the question
 joined, which is what should be embedded; `metadata.scenario` and
 `metadata.original_question` keep the two parts separately.
 
-Splits: train and dev. The test split ships without answers.
+Split: dev by default, the smallest with answers (285 questions; train has
+2,338, and test ships without answers). The pages are one corpus shared by all
+splits, but only those the kept questions point at are written, so the corpus
+belongs to the split. Only answerable questions are kept: the experiments score
+retrieval, and an unanswerable question has nothing to retrieve.
 
 Outputs:
   data/documents/<page>.txt      one policy page per document
@@ -29,7 +33,7 @@ Outputs:
   data/items.jsonl               {question, answer, evidences} records
 
 Requires: requests, markdownify
-Run with: python datasets/conditionalqa/load.py [--splits train dev]
+Run with: python datasets/conditionalqa/load.py [--splits dev train]
 """
 
 import argparse
@@ -166,25 +170,19 @@ def render(document):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--splits", nargs="+", default=["train", "dev"], choices=["train", "dev"],
-        help="Splits to build. The test split has no answers and is excluded.",
+        "--splits", nargs="+", default=["dev"], choices=["train", "dev"],
+        help="Splits to build. Defaults to dev, the smallest; the test split has no "
+             "answers and is excluded.",
     )
     args = parser.parse_args()
 
     documents = fetch(DOCUMENTS_FILE)
     print(f"{len(documents)} policy pages")
 
-    for directory in (DOCUMENTS_DIR, MARKDOWN_DIR, HTML_DIR):
-        directory.mkdir(parents=True, exist_ok=True)
-
     rendered = {}
-    lengths = []
     for document in documents:
         doc_id = document_id(document["url"])
         plain, markdown, html, spans = render(document)
-        (DOCUMENTS_DIR / f"{doc_id}.txt").write_text(plain, encoding="utf-8", newline="\n")
-        (MARKDOWN_DIR / f"{doc_id}.md").write_text(markdown, encoding="utf-8", newline="\n")
-        (HTML_DIR / f"{doc_id}.html").write_text(html, encoding="utf-8", newline="\n")
         # Evidence names an element by its text, so remember where each sits.
         # A page can repeat an element ("<p>Yes</p>"); such evidence is
         # ambiguous and is resolved to the first occurrence.
@@ -195,19 +193,17 @@ def main():
             else:
                 index[element] = position
         rendered[document["url"]] = (doc_id, plain, markdown, html, spans, index, repeated)
-        lengths.append(len(plain))
-
-    lengths.sort()
-    print(f"Wrote {len(lengths)} documents to {DOCUMENTS_DIR}, {MARKDOWN_DIR} and {HTML_DIR}")
-    print(f"  chars per document: min {lengths[0]:,} / median {lengths[len(lengths) // 2]:,} "
-          f"/ avg {sum(lengths) // len(lengths):,} / max {lengths[-1]:,}")
 
     items = []
-    located = ambiguous = unlocated = 0
+    located = ambiguous = unlocated = dropped = 0
     for split in args.splits:
         records = fetch(f"{split}.json")
         print(f"{split}: {len(records)} questions")
         for record in records:
+            answers = record.get("answers") or []
+            if record.get("not_answerable") or not answers:
+                dropped += 1
+                continue
             doc_id, plain, markdown, html, spans, index, repeated = rendered[record["url"]]
 
             evidences = []
@@ -239,15 +235,13 @@ def main():
                     },
                 })
 
-            answers = record.get("answers") or []
-            unanswerable = bool(record.get("not_answerable"))
             items.append({
                 "id": f"conditionalqa-{record['id']}",
                 # The question as written is underspecified on its own ("How long
                 # will it be before I hear back?") and only means anything with
                 # the scenario, so the two are joined into the query to use.
                 "question": f"{record['scenario']} {record['question']}".strip(),
-                "answer": "Unanswerable" if unanswerable or not answers else answers[0][0],
+                "answer": answers[0][0],
                 "evidences": evidences,
                 "metadata": {
                     "doc_id": doc_id,
@@ -255,8 +249,8 @@ def main():
                     "url": record["url"],
                     "scenario": record["scenario"],
                     "original_question": record["question"],
-                    "answer_type": "unanswerable" if unanswerable else (
-                        "yes_no" if answers and answers[0][0].lower() in ("yes", "no") else "extractive"
+                    "answer_type": (
+                        "yes_no" if answers[0][0].lower() in ("yes", "no") else "extractive"
                     ),
                     "answers": [
                         {"text": answer[0], "conditions": answer[1]} for answer in answers
@@ -265,14 +259,35 @@ def main():
                 },
             })
 
+    # Only the pages the kept questions point at; a previous build may have
+    # written others.
+    used = {item["metadata"]["doc_id"] for item in items}
+    for directory in (DOCUMENTS_DIR, MARKDOWN_DIR, HTML_DIR):
+        directory.mkdir(parents=True, exist_ok=True)
+        for stale in directory.iterdir():
+            stale.unlink()
+    lengths = []
+    for doc_id, plain, markdown, html, _, _, _ in rendered.values():
+        if doc_id not in used:
+            continue
+        (DOCUMENTS_DIR / f"{doc_id}.txt").write_text(plain, encoding="utf-8", newline="\n")
+        (MARKDOWN_DIR / f"{doc_id}.md").write_text(markdown, encoding="utf-8", newline="\n")
+        (HTML_DIR / f"{doc_id}.html").write_text(html, encoding="utf-8", newline="\n")
+        lengths.append(len(plain))
+    lengths.sort()
+    print(f"Wrote {len(lengths)} of {len(rendered)} documents to {DOCUMENTS_DIR}, "
+          f"{MARKDOWN_DIR} and {HTML_DIR}")
+    print(f"  chars per document: min {lengths[0]:,} / median {lengths[len(lengths) // 2]:,} "
+          f"/ avg {sum(lengths) // len(lengths):,} / max {lengths[-1]:,}")
+
     with ITEMS_PATH.open("w", encoding="utf-8", newline="\n") as handle:
         for item in items:
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-    unanswerable = sum(1 for item in items if item["metadata"]["answer_type"] == "unanswerable")
     conditional = sum(1 for item in items if item["metadata"]["conditional"])
     print(f"Wrote {len(items):,} items to {ITEMS_PATH}")
-    print(f"  {unanswerable:,} unanswerable, {conditional:,} with conditional answers")
+    print(f"  {dropped:,} unanswerable questions left out; "
+          f"{conditional:,} with conditional answers")
     print(f"  evidence spans located: {located:,}; unlocated: {unlocated:,}; "
           f"ambiguous (element repeated on the page, first used): {ambiguous:,}")
     print(f"  {sum(1 for i in items if not i['evidences']):,} items carry no evidence")

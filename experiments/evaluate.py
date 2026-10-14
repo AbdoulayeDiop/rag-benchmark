@@ -6,32 +6,36 @@ The configuration file names the runs to score, and optionally a RAGAS judge:
 
     {
       "results": "squad/**",
+      "max_items": 300,
       "ragas": {"judge_model": "gpt-oss-120b", "k": 5, "max_items": 200,
                 "requests_per_minute": 10, "workers": 8}
     }
 
 `results` is a path under `results/` written by `retrieve.py` or `rerank.py`,
 a glob pattern over such paths, "all", or a list of them. Each run is scored
-on every question in its `ranking.jsonl`, and everything goes into the run's
-own directory:
+on the first `max_items` questions of the sample order (`common.sample_order`)
+that its `ranking.jsonl` holds, or on every one when `max_items` is left out,
+so a long run can be scored on the sample a shorter one has; the summary
+records `max_items`. Everything goes into the run's own directory:
 
     <run>/evaluation/summary.json                  holds the span metrics and the RAGAS ones.
     <run>/evaluation/ragas-<judge>-k=<k>.jsonl     holds the judge's verdict on each question.
 
 The span metrics (`rag.evaluation`) call no model and are recomputed from the
-rankings at every run. They are computed over two groups of questions kept
-apart: `evidence`, those with evidence spans in the index's rendering, and
-`no_evidence`, those without spans but tied to a document -- unanswerable
-questions in a single-document dataset, and all of LiteraryQA, whose loader
-records no spans -- which get only `doc_hit`.
+rankings at every run. Unanswerable questions are not scored (`common.load_items`
+leaves them out), including those a run ranked before they were. The rest are
+scored in two groups kept apart: `evidence`, those with evidence spans in the
+index's rendering, and `no_evidence`, those without spans but tied to a
+document -- all of LiteraryQA and TriviaQA, whose loaders record no spans --
+which get only `doc_hit`.
 
 A dataset's evidence is not all alike, which the per-dataset tables should
-note. SQuAD's several spans are the answers of several annotators, each enough
-alone, and Qasper's merge the evidence of several annotators, so
-`evidence_recall` there undercounts an answerable context. ConditionalQA's are
+note. SQuAD's one span is the paragraph the question was written against, not
+the answer inside it. Qasper's merge the evidence of several annotators, each
+enough alone, so `evidence_recall` there undercounts an answerable context. ConditionalQA's are
 the page elements an answer and its conditions rest on together, which
 `evidence_recall` measures and `hit` does not. TriviaQA's evidence is a whole
-document, so `hit` is `doc_hit` there and `evidence_recall` means little.
+document, so it records no spans and gets `doc_hit` alone.
 GutenQA's "chunk" matches (12%) are the gold chunk of the source dataset,
 longer than the answer itself.
 
@@ -40,8 +44,8 @@ The summary also gives the mean `cost` of a question, from its line in
 were recorded has none, and `questions` says how many do.
 
 With `ragas`, the first `k` chunks (5) of each ranking are judged by
-`judge_model` (`rag.judge`), on a sample: the first `max_items` (200) questions
-of the sample order that have evidence and a reference answer, since RAGAS
+`judge_model` (`rag.judge`), on a sample: the first `ragas.max_items` (200) of
+the questions scored that have a reference answer, since RAGAS
 needs one. `workers` questions (8) are judged at once, their calls kept to the
 judge's `requests_per_minute` at the endpoint (10 for gpt-oss-120b); left out,
 they are not spaced. A chunk is shown to the judge as `build_text_for_llm`
@@ -68,9 +72,8 @@ from experiments.common import (INDEXES, RERANK_DEPTH, RESULTS, RETRIEVAL_DEPTH,
                                 name, parse_arguments, read_json, read_jsonl, relative, resolve,
                                 run_each, sample_order, write_json)
 
-CONFIG_KEYS = ("results", "ragas")
-RAGAS_KEYS = ("judge_model", "k", "max_items", "requests_per_minute", "workers",
-              "max_output_tokens")
+CONFIG_KEYS = ("results", "max_items", "ragas")
+RAGAS_KEYS = ("judge_model", "k", "max_items", "requests_per_minute", "workers")
 
 
 def summarize_cost(records):
@@ -93,8 +96,23 @@ def _setup(directory):
     return config, (config["retrieval_config"] if config["stage"] == "rerank" else config)
 
 
-def score_spans(directory):
-    """Score one run's rankings against the evidence spans; return the summary."""
+def _scored(directory, items, max_items=None):
+    """The run's rankings of `items`, in sample order, the first `max_items` of them.
+
+    A run ranked before unanswerable questions were left out still holds them;
+    they are not in `items`.
+    """
+    records = sorted((record for record in read_jsonl(directory / "ranking.jsonl")
+                      if record["id"] in items), key=lambda record: sample_order(record["id"]))
+    return records[:max_items]
+
+
+def score_spans(directory, max_items=None):
+    """Score one run's rankings against the evidence spans; return the summary.
+
+    Only the first `max_items` questions of the sample order are scored, or
+    all of them when it is None.
+    """
     config, retrieval = _setup(directory)
     chunks_config = retrieval["chunks_config"]
     chunks_by_document = {}
@@ -103,7 +121,7 @@ def score_spans(directory):
     items, skipped = load_items(chunks_config["dataset"], chunks_config["rendering"],
                                 set(chunks_by_document))
     items = {item["id"]: item for item in items}
-    records = read_jsonl(directory / "ranking.jsonl")
+    records = _scored(directory, items, max_items)
     if not records:
         raise FileNotFoundError(f"{directory} holds no rankings yet")
 
@@ -130,15 +148,21 @@ def score_spans(directory):
         "chunks": retrieval["chunks"],
         "mean_chunk_chars": sum(lengths) / len(lengths) if lengths else 0,
         "skipped": skipped,
+        "max_items": max_items,
         "items": {group: len(scores) for group, scores in groups.items()},
         "metrics": {group: mean_scores(scores) for group, scores in groups.items() if scores},
         "cost": summarize_cost(records),
     }
 
 
-def judge_run(directory, judge_model, k=5, max_items=200, requests_per_minute=None, workers=8,
-              max_output_tokens=2048):
-    """Judge one run's rankings with RAGAS, continuing what is on disk; return the summary entry."""
+def judge_run(directory, judge_model, k=5, max_items=200,
+              requests_per_minute=None, workers=8, scored=None):
+    """Judge one run's rankings with RAGAS, continuing what is on disk; return the summary entry.
+
+    The sample is the first `max_items` questions with a reference answer
+    among the first `scored` of the sample order (all of them when None), the
+    questions the span metrics were computed on.
+    """
     # Imported here: ragas is slow to load, and most evaluations do not use it.
     from rag.judge import judge, judge_metrics, summarize
 
@@ -149,9 +173,8 @@ def judge_run(directory, judge_model, k=5, max_items=200, requests_per_minute=No
     items, _ = load_items(chunks_config["dataset"], chunks_config["rendering"],
                           {doc_id for doc_id, _ in chunks})
     items = {item["id"]: item for item in items}
-    records = sorted((record for record in read_jsonl(directory / "ranking.jsonl")
-                      if items[record["id"]]["spans"] and items[record["id"]]["answer"]),
-                     key=lambda record: sample_order(record["id"]))[:max_items]
+    records = [record for record in _scored(directory, items, scored)
+               if items[record["id"]]["answer"]][:max_items]
     path = directory / "evaluation" / f"{name(f'ragas-{judge_model}', {'k': k})}.jsonl"
     path.parent.mkdir(exist_ok=True)
     # A question whose judging failed is judged again: its verdict is dropped
@@ -173,7 +196,7 @@ def judge_run(directory, judge_model, k=5, max_items=200, requests_per_minute=No
         return build_text_for_llm(chunk.original_text, chunk.metadata)
 
     async def run():
-        precision, recall = judge_metrics(judge_model, requests_per_minute, max_output_tokens)
+        precision, recall = judge_metrics(judge_model, requests_per_minute)
         semaphore = asyncio.Semaphore(workers)
 
         async def one(record):
@@ -200,18 +223,21 @@ def judge_run(directory, judge_model, k=5, max_items=200, requests_per_minute=No
     return entry
 
 
-def evaluate(directory, ragas=None):
-    """Score one run, and judge it if `ragas` names a judge; write and return the summary."""
+def evaluate(directory, ragas=None, max_items=None):
+    """Score one run, and judge it if `ragas` names a judge; write and return the summary.
+
+    `max_items` limits both to the first that many questions of the sample order.
+    """
     path = directory / "evaluation" / "summary.json"
     previous = read_json(path) if path.exists() else {}
-    summary = {**score_spans(directory), "ragas": previous.get("ragas", {})}
+    summary = {**score_spans(directory, max_items), "ragas": previous.get("ragas", {})}
     write_json(path, summary)
     if ragas:
         k = ragas.get("k", 5)
         summary["ragas"][f"{ragas['judge_model']}-k={k}"] = judge_run(
             directory, ragas["judge_model"], k, ragas.get("max_items", 200),
-            ragas.get("requests_per_minute"), ragas.get("workers", 8),
-            ragas.get("max_output_tokens", 2048))
+            ragas.get("requests_per_minute"), ragas.get("workers", 8), max_items
+        )
         write_json(path, summary)
     print(f"{summary['run']}: {summary['metrics'].get('evidence', summary['metrics'].get('no_evidence'))}")
     return summary
@@ -228,7 +254,8 @@ def main():
     runs = [path for path in resolve(RESULTS, config.get("results"),
                                      (RETRIEVAL_DEPTH, RERANK_DEPTH), arguments.config)
             if (path / "ranking.jsonl").exists()]
-    run_each(runs, lambda run: relative(run, RESULTS), lambda run: evaluate(run, ragas),
+    run_each(runs, lambda run: relative(run, RESULTS),
+             lambda run: evaluate(run, ragas, config.get("max_items")),
              arguments.dry_run, arguments.keep_going)
 
 
